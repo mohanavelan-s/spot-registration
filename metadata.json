@@ -1,0 +1,6 @@
+{
+  "name": "AIROX'26 Participant Event Extractor",
+  "description": "Production-grade symposium registration parsing, event normalization, participant extraction, live Google Sheets offline desk, and role-based access control for AIROX'26.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
