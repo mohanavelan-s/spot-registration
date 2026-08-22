@@ -97,6 +97,48 @@ export function exportToXLSX(
   XLSX.writeFile(workbook, filename);
 }
 
+import { getAuthHeaders } from '../services/auth';
+
+/**
+ * Server-Enforced RBAC Export: Downloads authoritative roster from backend
+ */
+export async function exportFromServer(
+  eventKey: string,
+  eventName: string,
+  format: 'xlsx' | 'csv' = 'xlsx',
+  fallbackParticipants?: Participant[]
+): Promise<void> {
+  try {
+    const res = await fetch(`/api/events/${encodeURIComponent(eventKey)}/export?format=${format}`, {
+      headers: getAuthHeaders()
+    });
+
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = generateExportFilename(eventName, format);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      return;
+    }
+  } catch (err) {
+    console.warn('[Exporter] Backend export failed, using client-side export fallback:', err);
+  }
+
+  // Fallback if client-side records provided
+  if (fallbackParticipants && fallbackParticipants.length > 0) {
+    if (format === 'csv') {
+      exportToCSV(fallbackParticipants, eventName);
+    } else {
+      exportToXLSX(fallbackParticipants, eventName);
+    }
+  }
+}
+
 /**
  * Export participants to CSV
  */

@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { AppUser, UserRole, UserStatus, AuditLogEntry, AuditActionType } from '../types';
+import { apiRequest } from './apiClient';
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 export const auth = getAuth(app);
@@ -93,20 +94,16 @@ export const loginWithCredentials = async (
   usernameOrEmail: string,
   passwordAttempt: string
 ): Promise<{ user: AppUser; mustChangePassword: boolean }> => {
-  const res = await fetch('/api/auth/login', {
+  const { ok, data, error } = await apiRequest<{ success: boolean; user: AppUser; token?: string; mustChangePassword?: boolean; error?: string }>('/api/auth/login', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
     body: JSON.stringify({
       username: usernameOrEmail.trim(),
       password: passwordAttempt
     })
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Invalid username or password.');
+  if (!ok || !data.success || !data.user) {
+    throw new Error(error || data.error || 'Invalid username or password.');
   }
 
   if (data.token && typeof window !== 'undefined') {
@@ -128,9 +125,8 @@ export const changePasswordApi = async (
   currentPassword?: string,
   userId?: string
 ): Promise<AppUser> => {
-  const res = await fetch('/api/auth/change-password', {
+  const { ok, data, error } = await apiRequest<{ success: boolean; user: AppUser; error?: string }>('/api/auth/change-password', {
     method: 'POST',
-    headers: getAuthHeaders(),
     body: JSON.stringify({
       newPassword,
       currentPassword,
@@ -138,9 +134,8 @@ export const changePasswordApi = async (
     })
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Failed to update password.');
+  if (!ok || !data.success || !data.user) {
+    throw new Error(error || data.error || 'Failed to update password.');
   }
 
   setStoredUser(data.user);
@@ -154,15 +149,16 @@ export const resetUserPasswordApi = async (
   userId: string,
   newPassword?: string
 ): Promise<{ user: AppUser; temporaryPassword?: string; message: string }> => {
-  const res = await fetch(`/api/auth/users/${encodeURIComponent(userId)}/reset-password`, {
-    method: 'POST',
-    headers: getAuthHeaders(),
-    body: JSON.stringify({ newPassword })
-  });
+  const { ok, data, error } = await apiRequest<{ success: boolean; user: AppUser; temporaryPassword?: string; message?: string; error?: string }>(
+    `/api/auth/users/${encodeURIComponent(userId)}/reset-password`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ newPassword })
+    }
+  );
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Failed to reset password.');
+  if (!ok || !data.success) {
+    throw new Error(error || data.error || 'Failed to reset password.');
   }
 
   return {
@@ -190,11 +186,8 @@ export const googleSignIn = async (): Promise<{ user: User; appUser: AppUser; ac
     }
 
     // Authenticate with server to fetch role & permissions
-    const res = await fetch('/api/auth/login', {
+    const { ok, data, error } = await apiRequest<{ success: boolean; user: AppUser; token?: string; error?: string }>('/api/auth/login', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify({
         email: result.user.email,
         name: result.user.displayName || result.user.email?.split('@')[0] || 'Authorized User',
@@ -202,9 +195,8 @@ export const googleSignIn = async (): Promise<{ user: User; appUser: AppUser; ac
       })
     });
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Access Denied: Your Google account is not authorized for this symposium portal.');
+    if (!ok || !data.success || !data.user) {
+      throw new Error(error || data.error || 'Access Denied: Your Google account is not authorized for this symposium portal.');
     }
 
     if (data.token && typeof window !== 'undefined') {
@@ -245,11 +237,9 @@ export const checkCurrentSession = async (): Promise<AppUser | null> => {
       return null;
     }
 
-    const res = await fetch('/api/auth/me', {
-      headers: getAuthHeaders()
-    });
+    const { ok, data } = await apiRequest<{ success: boolean; user: AppUser }>('/api/auth/me');
 
-    if (!res.ok) {
+    if (!ok || !data.success || !data.user) {
       setStoredUser(null);
       if (typeof window !== 'undefined') {
         localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -257,12 +247,8 @@ export const checkCurrentSession = async (): Promise<AppUser | null> => {
       return null;
     }
 
-    const data = await res.json();
-    if (data.success && data.user) {
-      setStoredUser(data.user);
-      return data.user;
-    }
-    return null;
+    setStoredUser(data.user);
+    return data.user;
   } catch {
     return getStoredUser();
   }
@@ -413,12 +399,10 @@ export function canSyncData(user: AppUser | null): boolean {
 // ==========================================
 
 export async function fetchCertificateRecords(): Promise<any[]> {
-  const res = await fetch('/api/certificates', { headers: getAuthHeaders() });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to fetch certificate records');
+  const { ok, data, error } = await apiRequest<{ success: boolean; records: any[] }>('/api/certificates');
+  if (!ok || !data.success) {
+    throw new Error(error || 'Failed to fetch certificate records');
   }
-  const data = await res.json();
   return data.records || [];
 }
 
@@ -429,16 +413,13 @@ export async function updateCertificateStatusApi(
   participantName?: string,
   college?: string
 ): Promise<any> {
-  const res = await fetch('/api/certificates/update', {
+  const { ok, data, error } = await apiRequest<{ success: boolean; record: any }>('/api/certificates/update', {
     method: 'POST',
-    headers: getAuthHeaders(),
     body: JSON.stringify({ registrationId, event, status, participantName, college })
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to update certificate status');
+  if (!ok || !data.success) {
+    throw new Error(error || 'Failed to update certificate status');
   }
-  const data = await res.json();
   return data.record;
 }
 
@@ -451,29 +432,23 @@ export async function bulkUpdateCertificateStatusApi(
     college?: string;
   }>
 ): Promise<any[]> {
-  const res = await fetch('/api/certificates/bulk-update', {
+  const { ok, data, error } = await apiRequest<{ success: boolean; records: any[] }>('/api/certificates/bulk-update', {
     method: 'POST',
-    headers: getAuthHeaders(),
     body: JSON.stringify({ updates })
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to bulk update certificates');
+  if (!ok || !data.success) {
+    throw new Error(error || 'Failed to bulk update certificates');
   }
-  const data = await res.json();
   return data.records || [];
 }
 
 export async function syncCertificateRecordsApi(): Promise<any[]> {
-  const res = await fetch('/api/certificates/sync', {
-    method: 'POST',
-    headers: getAuthHeaders()
+  const { ok, data, error } = await apiRequest<{ success: boolean; records: any[] }>('/api/certificates/sync', {
+    method: 'POST'
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to sync certificate records');
+  if (!ok || !data.success) {
+    throw new Error(error || 'Failed to sync certificate records');
   }
-  const data = await res.json();
   return data.records || [];
 }
 
@@ -482,12 +457,10 @@ export async function syncCertificateRecordsApi(): Promise<any[]> {
 // ==========================================
 
 export async function fetchUsersList(): Promise<AppUser[]> {
-  const res = await fetch('/api/auth/users', { headers: getAuthHeaders() });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to fetch users list');
+  const { ok, data, error } = await apiRequest<{ success: boolean; users: AppUser[] }>('/api/auth/users');
+  if (!ok || !data.success) {
+    throw new Error(error || 'Failed to fetch users list');
   }
-  const data = await res.json();
   return data.users || [];
 }
 
@@ -503,16 +476,13 @@ export async function createUser(userData: {
   yearSection?: string;
   password?: string;
 }): Promise<AppUser> {
-  const res = await fetch('/api/auth/users', {
+  const { ok, data, error } = await apiRequest<{ success: boolean; user: AppUser }>('/api/auth/users', {
     method: 'POST',
-    headers: getAuthHeaders(),
     body: JSON.stringify(userData)
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to create user');
+  if (!ok || !data.success || !data.user) {
+    throw new Error(error || 'Failed to create user');
   }
-  const data = await res.json();
   return data.user;
 }
 
@@ -530,46 +500,38 @@ export async function updateUser(
     yearSection?: string;
   }
 ): Promise<AppUser> {
-  const res = await fetch(`/api/auth/users/${encodeURIComponent(id)}`, {
+  const { ok, data, error } = await apiRequest<{ success: boolean; user: AppUser }>(`/api/auth/users/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    headers: getAuthHeaders(),
     body: JSON.stringify(updates)
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to update user');
+  if (!ok || !data.success || !data.user) {
+    throw new Error(error || 'Failed to update user');
   }
-  const data = await res.json();
   return data.user;
 }
 
 export async function deleteUser(id: string): Promise<boolean> {
-  const res = await fetch(`/api/auth/users/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    headers: getAuthHeaders()
+  const { ok, error } = await apiRequest<{ success: boolean }>(`/api/auth/users/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to delete user');
+  if (!ok) {
+    throw new Error(error || 'Failed to delete user');
   }
   return true;
 }
 
 export async function fetchAuditLogs(limit: number = 100): Promise<AuditLogEntry[]> {
-  const res = await fetch(`/api/audit-logs?limit=${limit}`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to fetch audit logs');
+  const { ok, data, error } = await apiRequest<{ success: boolean; logs: AuditLogEntry[] }>(`/api/audit-logs?limit=${limit}`);
+  if (!ok || !data.success) {
+    throw new Error(error || 'Failed to fetch audit logs');
   }
-  const data = await res.json();
   return data.logs || [];
 }
 
 export async function logAuditAction(action: AuditActionType, details: string, targetId?: string): Promise<void> {
   try {
-    await fetch('/api/audit-logs', {
+    await apiRequest('/api/audit-logs', {
       method: 'POST',
-      headers: getAuthHeaders(),
       body: JSON.stringify({ action, details, targetId, status: 'SUCCESS' })
     });
   } catch (e) {
@@ -579,12 +541,9 @@ export async function logAuditAction(action: AuditActionType, details: string, t
 
 export async function verifyServerEventAccess(eventKey: string): Promise<{ allowed: boolean; error?: string }> {
   try {
-    const res = await fetch(`/api/events/${encodeURIComponent(eventKey)}/verify-access`, {
-      headers: getAuthHeaders()
-    });
-    const data = await res.json();
-    if (!res.ok || !data.allowed) {
-      return { allowed: false, error: data.error || 'Access Denied' };
+    const { ok, data, error } = await apiRequest<{ allowed: boolean; error?: string }>(`/api/events/${encodeURIComponent(eventKey)}/verify-access`);
+    if (!ok || !data.allowed) {
+      return { allowed: false, error: error || data.error || 'Access Denied' };
     }
     return { allowed: true };
   } catch (e: any) {

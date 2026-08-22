@@ -4,15 +4,26 @@ import { createServer as createViteServer } from 'vite';
 import { serverSheetsService } from './server/sheetsService';
 import { serverAuthService, AppUser, UserRole } from './server/authService';
 import { serverCertificateService } from './server/certificateService';
+import { serverCombinedService } from './server/combinedService';
 
 // Extend Express Request type to include authenticated user
 interface AuthenticatedRequest extends Request {
   user?: AppUser | null;
 }
 
-async function startServer() {
+export function createApp() {
   const app = express();
-  const PORT = 3000;
+
+  // CORS Middleware
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
 
   // JSON Body parsing
   app.use(express.json());
@@ -799,9 +810,25 @@ async function startServer() {
   app.get('/api/online/registrations', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const result = await serverSheetsService.fetchOnlineRegistrations();
+      let rows = result.rows;
+
+      // Filter for EVENT_COORDINATOR role to their assigned events
+      if (req.user && req.user.role === 'EVENT_COORDINATOR' && (!req.user.secondaryRoles || !req.user.secondaryRoles.includes('ADMIN'))) {
+        const assigned = (req.user.assignedEvents || []).map(e => e.toLowerCase().replace(/[^a-z0-9]/g, ''));
+        rows = rows.filter(r => {
+          const rowStr = JSON.stringify(r).toLowerCase().replace(/[^a-z0-9]/g, '');
+          return assigned.some(ak => ak && rowStr.includes(ak));
+        });
+      }
+
       res.json({
         success: true,
-        ...result
+        rows,
+        headers: result.headers,
+        source: result.source,
+        count: rows.length,
+        sheetId: result.sheetId,
+        warning: result.warning
       });
     } catch (err: any) {
       console.warn('[API:Online] Notice fetching online registrations:', err?.message || err);
@@ -847,7 +874,101 @@ async function startServer() {
     }
   });
 
-  // --- Vite / Static Middleware ---
+  // --- COMBINED PARTICIPANTS & ROSTER EXPORT APIS ---
+
+  // Get Authoritative Combined Dataset with Role-based filtering
+  app.get('/api/participants/combined', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const data = await serverCombinedService.getAuthorizedParticipants(req.user!);
+      res.json({
+        success: true,
+        ...data
+      });
+    } catch (err: any) {
+      console.error('[API:CombinedParticipants] Error:', err);
+      res.status(500).json({
+        success: false,
+        error: err.message || 'Failed to fetch combined participants'
+      });
+    }
+  });
+
+  // Get Event Roster
+  app.get('/api/events/:eventKey/roster', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const eventKey = req.params.eventKey;
+      const participants = await serverCombinedService.getEventRoster(eventKey, req.user!);
+      res.json({
+        success: true,
+        eventKey,
+        participants,
+        count: participants.length
+      });
+    } catch (err: any) {
+      const status = err.message?.includes('Forbidden') ? 403 : 500;
+      res.status(status).json({
+        success: false,
+        error: err.message || 'Failed to fetch event roster'
+      });
+    }
+  });
+
+  // Export Event Roster (Enforces server-side RBAC)
+  app.get('/api/events/:eventKey/export', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const eventKey = req.params.eventKey;
+      const format = (req.query.format === 'csv' ? 'csv' : 'xlsx') as 'xlsx' | 'csv';
+      const { buffer, filename, contentType } = await serverCombinedService.exportEventRoster(eventKey, req.user!, format);
+
+      serverAuthService.logAudit({
+        userEmail: req.user!.email,
+        userName: req.user!.name,
+        role: req.user!.role,
+        action: 'ROSTER_EXPORTED',
+        details: `Exported ${format.toUpperCase()} roster for event '${eventKey}'`,
+        targetId: eventKey,
+        status: 'SUCCESS'
+      });
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(buffer);
+    } catch (err: any) {
+      const status = err.message?.includes('Forbidden') ? 403 : 500;
+      res.status(status).json({
+        success: false,
+        error: err.message || 'Failed to export event roster'
+      });
+    }
+  });
+
+  // API 404 handler
+  app.use('/api', (req: Request, res: Response) => {
+    res.status(404).json({
+      success: false,
+      error: `API route not found: ${req.method} ${req.originalUrl}`
+    });
+  });
+
+  // Global API error handler
+  app.use('/api', (err: any, req: Request, res: Response, next: NextFunction) => {
+    console.error('[API Server Error]', err);
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message || 'Internal Server Error'
+    });
+  });
+
+  return app;
+}
+
+const app = createApp();
+export default app;
+
+async function startServer() {
+  const PORT = 3000;
+
+  // Vite / Static Middleware
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -867,5 +988,8 @@ async function startServer() {
   });
 }
 
-startServer();
+// Start server if not executed as a serverless function module
+if (process.env.VERCEL !== '1') {
+  startServer();
+}
 

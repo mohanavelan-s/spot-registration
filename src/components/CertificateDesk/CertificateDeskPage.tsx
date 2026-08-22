@@ -95,11 +95,21 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
     }
   }, [getCertKey]);
 
+  // 2-minute automatic refresh interval
   useEffect(() => {
     loadCertificates();
     if (onRefreshData) {
       onRefreshData();
     }
+
+    const intervalId = setInterval(() => {
+      loadCertificates();
+      if (onRefreshData) {
+        onRefreshData();
+      }
+    }, 120000); // 2 minutes (120,000 ms)
+
+    return () => clearInterval(intervalId);
   }, [loadCertificates, onRefreshData]);
 
   // Handle Sync / Refresh

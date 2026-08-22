@@ -266,6 +266,7 @@ export function checkDuplicateRegistration(
 }
 
 import { getAccessToken, getAuthHeaders } from './auth';
+import { apiRequest } from './apiClient';
 
 /**
  * Authoritative Server-Side Google Sheets & Backend API Client
@@ -279,13 +280,10 @@ export class OfflineApiClient {
    * Fetches all offline registrations from the authoritative Google Sheets backend
    */
   async fetchRegistrations(): Promise<{ records: OfflineRegistrationRecord[]; headers: string[]; source: string; sheetId?: string }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/registrations', { headers });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Unable to fetch registrations from Google Sheets.');
+    const { ok, data, error } = await apiRequest<{ records: OfflineRegistrationRecord[]; headers: string[]; source: string; sheetId?: string }>('/api/offline/registrations');
+    if (!ok) {
+      throw new Error(error || 'Unable to fetch registrations from Google Sheets.');
     }
-    const data = await res.json();
     return {
       records: data.records || [],
       headers: data.headers || OFFLINE_SHEET_HEADERS,
@@ -298,13 +296,13 @@ export class OfflineApiClient {
    * Triggers a live sync with Google Sheets
    */
   async syncRegistrations(): Promise<{ records: OfflineRegistrationRecord[]; headers: string[]; source: string; message: string }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/sync', { method: 'POST', headers });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Unable to sync offline registrations. Please try again.');
+    const { ok, data, error } = await apiRequest<{ records: OfflineRegistrationRecord[]; headers: string[]; source: string; message: string }>('/api/offline/sync', {
+      method: 'POST'
+    });
+    if (!ok) {
+      throw new Error(error || 'Unable to sync offline registrations. Please try again.');
     }
-    return await res.json();
+    return data;
   }
 
   /**
@@ -314,22 +312,18 @@ export class OfflineApiClient {
     formData: OfflineRegistrationFormData,
     coordinatorName: string = 'Desk Admin'
   ): Promise<OfflineRegistrationRecord> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/registrations', {
+    const { ok, data, error } = await apiRequest<{ success: boolean; record: OfflineRegistrationRecord }>('/api/offline/registrations', {
       method: 'POST',
-      headers,
       body: JSON.stringify({
         formData,
         coordinatorName
       })
     });
 
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Unable to save registration to Google Sheets.');
+    if (!ok || !data.record) {
+      throw new Error(error || 'Unable to save registration to Google Sheets.');
     }
 
-    const data = await res.json();
     return data.record;
   }
 
@@ -341,22 +335,18 @@ export class OfflineApiClient {
     updates: Partial<OfflineRegistrationRecord>,
     coordinatorName: string = 'Desk Admin'
   ): Promise<OfflineRegistrationRecord> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch(`/api/offline/registrations/${encodeURIComponent(id)}`, {
+    const { ok, data, error } = await apiRequest<{ success: boolean; record: OfflineRegistrationRecord }>(`/api/offline/registrations/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      headers,
       body: JSON.stringify({
         updates,
         coordinatorName
       })
     });
 
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Unable to update registration in Google Sheets.');
+    if (!ok || !data.record) {
+      throw new Error(error || 'Unable to update registration in Google Sheets.');
     }
 
-    const data = await res.json();
     return data.record;
   }
 
@@ -364,19 +354,15 @@ export class OfflineApiClient {
    * Soft-deletes a registration by setting Status = CANCELLED in Google Sheets
    */
   async cancelRegistration(id: string, coordinatorName: string = 'Desk Admin'): Promise<OfflineRegistrationRecord> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch(`/api/offline/registrations/${encodeURIComponent(id)}/cancel`, {
+    const { ok, data, error } = await apiRequest<{ success: boolean; record: OfflineRegistrationRecord }>(`/api/offline/registrations/${encodeURIComponent(id)}/cancel`, {
       method: 'POST',
-      headers,
       body: JSON.stringify({ coordinatorName })
     });
 
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Unable to cancel registration in Google Sheets.');
+    if (!ok || !data.record) {
+      throw new Error(error || 'Unable to cancel registration in Google Sheets.');
     }
 
-    const data = await res.json();
     return data.record;
   }
 
@@ -384,19 +370,15 @@ export class OfflineApiClient {
    * Restores a previously cancelled registration
    */
   async restoreRegistration(id: string, coordinatorName: string = 'Desk Admin'): Promise<OfflineRegistrationRecord> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch(`/api/offline/registrations/${encodeURIComponent(id)}/restore`, {
+    const { ok, data, error } = await apiRequest<{ success: boolean; record: OfflineRegistrationRecord }>(`/api/offline/registrations/${encodeURIComponent(id)}/restore`, {
       method: 'POST',
-      headers,
       body: JSON.stringify({ coordinatorName })
     });
 
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Unable to restore registration in Google Sheets.');
+    if (!ok || !data.record) {
+      throw new Error(error || 'Unable to restore registration in Google Sheets.');
     }
 
-    const data = await res.json();
     return data.record;
   }
 
@@ -404,30 +386,28 @@ export class OfflineApiClient {
    * Get server-side Google Sheets configuration status
    */
   async getConfig(): Promise<{ sheetId: string; isGoogleAuthReady: boolean; authMethod?: string; serviceAccountEmail?: string }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/config', { headers });
-    if (!res.ok) return { sheetId: '', isGoogleAuthReady: false };
-    return await res.json();
+    const { ok, data } = await apiRequest<{ sheetId: string; isGoogleAuthReady: boolean; authMethod?: string; serviceAccountEmail?: string }>('/api/offline/config');
+    if (!ok) return { sheetId: '', isGoogleAuthReady: false };
+    return data;
   }
 
   /**
    * Run server diagnostics on Google Sheets connectivity
    */
   async getDiagnostics(): Promise<any> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/diagnostics', { headers });
-    return await res.json();
+    const { data } = await apiRequest<any>('/api/offline/diagnostics');
+    return data;
   }
 
   /**
    * Execute backend test write of TEST-AIROX26
    */
   async executeTestWrite(): Promise<{ success: boolean; record?: OfflineRegistrationRecord; error?: string; message: string }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/test-write', { method: 'POST', headers });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || data.message || 'Diagnostic test write failed');
+    const { ok, data, error } = await apiRequest<{ success: boolean; record?: OfflineRegistrationRecord; error?: string; message: string }>('/api/offline/test-write', {
+      method: 'POST'
+    });
+    if (!ok) {
+      throw new Error(error || data?.message || 'Diagnostic test write failed');
     }
     return data;
   }
@@ -436,17 +416,14 @@ export class OfflineApiClient {
    * Update server-side Google Sheets Sheet ID
    */
   async setConfig(sheetId: string): Promise<{ success: boolean; sheetId: string; isGoogleAuthReady: boolean; authMethod?: string; serviceAccountEmail?: string }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/offline/config', {
+    const { ok, data, error } = await apiRequest<{ success: boolean; sheetId: string; isGoogleAuthReady: boolean; authMethod?: string; serviceAccountEmail?: string }>('/api/offline/config', {
       method: 'POST',
-      headers,
       body: JSON.stringify({ sheetId })
     });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Failed to update Google Sheet ID.');
+    if (!ok) {
+      throw new Error(error || 'Failed to update Google Sheet ID.');
     }
-    return await res.json();
+    return data;
   }
 }
 
@@ -467,13 +444,19 @@ export class OnlineApiClient {
     sheetId?: string;
     warning?: string;
   }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/online/registrations', { headers });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Failed to fetch online registrations');
+    const { ok, data, error } = await apiRequest<{
+      success: boolean;
+      rows: any[];
+      headers: string[];
+      source: 'GOOGLE_SHEETS' | 'UNCONFIGURED' | 'FALLBACK';
+      count: number;
+      sheetId?: string;
+      warning?: string;
+    }>('/api/online/registrations');
+    if (!ok) {
+      throw new Error(error || 'Failed to fetch online registrations');
     }
-    return await res.json();
+    return data;
   }
 
   async syncRegistrations(): Promise<{
@@ -485,34 +468,36 @@ export class OnlineApiClient {
     sheetId?: string;
     warning?: string;
   }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/online/sync', { method: 'POST', headers });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Failed to sync online registrations');
+    const { ok, data, error } = await apiRequest<{
+      success: boolean;
+      rows: any[];
+      headers: string[];
+      source: 'GOOGLE_SHEETS' | 'UNCONFIGURED' | 'FALLBACK';
+      count: number;
+      sheetId?: string;
+      warning?: string;
+    }>('/api/online/sync', { method: 'POST' });
+    if (!ok) {
+      throw new Error(error || 'Failed to sync online registrations');
     }
-    return await res.json();
+    return data;
   }
 
   async getConfig(): Promise<{ sheetId: string; isGoogleAuthReady: boolean }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/online/config', { headers });
-    if (!res.ok) return { sheetId: '', isGoogleAuthReady: false };
-    return await res.json();
+    const { ok, data } = await apiRequest<{ sheetId: string; isGoogleAuthReady: boolean }>('/api/online/config');
+    if (!ok) return { sheetId: '', isGoogleAuthReady: false };
+    return data;
   }
 
   async setConfig(sheetId: string): Promise<{ success: boolean; sheetId: string; isGoogleAuthReady: boolean }> {
-    const headers = await this.getAuthHeaders();
-    const res = await fetch('/api/online/config', {
+    const { ok, data, error } = await apiRequest<{ success: boolean; sheetId: string; isGoogleAuthReady: boolean }>('/api/online/config', {
       method: 'POST',
-      headers,
       body: JSON.stringify({ sheetId })
     });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.error || 'Failed to update Online Sheet ID.');
+    if (!ok) {
+      throw new Error(error || 'Failed to update Online Sheet ID.');
     }
-    return await res.json();
+    return data;
   }
 }
 
