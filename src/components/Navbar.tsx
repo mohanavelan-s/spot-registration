@@ -14,6 +14,7 @@ import {
   Download
 } from 'lucide-react';
 import { AppUser, UserRole } from '../types';
+import { userHasRole } from '../services/auth';
 
 export type AppViewMode = 'extractor' | 'matrix' | 'offline' | 'users' | 'certificates';
 
@@ -54,12 +55,12 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const role = currentUser?.role;
 
-  // Determine allowed navigation items per role
-  const canSeeCombined = !currentUser || role === 'ADMIN' || role === 'DATABASE' || role === 'EVENT_COORDINATOR';
-  const canSeeOfflineDesk = !currentUser || role === 'ADMIN' || role === 'ON_SPOT';
-  const canSeeMatrix = !currentUser || role === 'ADMIN' || role === 'DATABASE';
+  // Determine allowed navigation items per role (supporting secondary roles)
+  const canSeeCombined = !currentUser || role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'REGISTRATION') || userHasRole(currentUser, 'EVENT_COORDINATOR');
+  const canSeeOfflineDesk = !currentUser || role === 'ADMIN' || userHasRole(currentUser, 'ON_SPOT') || userHasRole(currentUser, 'REGISTRATION');
+  const canSeeMatrix = !currentUser || role === 'ADMIN' || userHasRole(currentUser, 'DATABASE');
   const canSeeUserManagement = currentUser && role === 'ADMIN';
-  const canSeeCertificates = currentUser && (role === 'ADMIN' || role === 'CERTIFICATE');
+  const canSeeCertificates = currentUser && (role === 'ADMIN' || userHasRole(currentUser, 'CERTIFICATE'));
   const isCoordinator = currentUser && role === 'EVENT_COORDINATOR';
   const isCertificateRole = currentUser && role === 'CERTIFICATE';
 
@@ -106,7 +107,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="tab-extractor"
                 onClick={() => setCurrentView('extractor')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                   currentView === 'extractor'
                     ? 'bg-white text-indigo-700 shadow-xs border border-slate-200'
                     : 'text-slate-600 hover:text-slate-900'
@@ -120,12 +121,12 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Offline Desk (Admin & On-Spot) */}
+            {/* Offline Desk (Admin & On-Spot & Registration) */}
             {canSeeOfflineDesk && (
               <button
                 id="tab-offline"
                 onClick={() => setCurrentView('offline')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                   currentView === 'offline'
                     ? 'bg-emerald-600 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -148,7 +149,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="tab-matrix"
                 onClick={() => setCurrentView('matrix')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                   currentView === 'matrix'
                     ? 'bg-white text-indigo-700 shadow-xs border border-slate-200'
                     : 'text-slate-600 hover:text-slate-900'
@@ -164,7 +165,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="tab-certificates"
                 onClick={() => setCurrentView('certificates')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                   currentView === 'certificates'
                     ? 'bg-amber-600 text-white shadow-xs'
                     : 'text-amber-800 hover:bg-amber-50'
@@ -180,7 +181,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="tab-users"
                 onClick={() => setCurrentView('users')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                   currentView === 'users'
                     ? 'bg-purple-600 text-white shadow-xs'
                     : 'text-purple-700 hover:bg-purple-50'
@@ -195,7 +196,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Right Action Controls */}
           <div className="flex items-center gap-2 sm:gap-2.5">
             {/* Quick Export button for Coordinators, Database, or Admin (NOT CERTIFICATE) */}
-            {onOpenExport && (role === 'ADMIN' || role === 'DATABASE' || role === 'EVENT_COORDINATOR') && (
+            {onOpenExport && (role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'EVENT_COORDINATOR')) && (
               <button
                 id="btn-quick-export"
                 onClick={onOpenExport}
@@ -207,7 +208,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {onSyncData && (role === 'ADMIN' || role === 'DATABASE' || role === 'ON_SPOT' || role === 'EVENT_COORDINATOR') && (
+            {onSyncData && (role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'ON_SPOT') || userHasRole(currentUser, 'EVENT_COORDINATOR')) && (
               <button
                 id="btn-sync-data"
                 onClick={onSyncData}
@@ -221,7 +222,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
 
             {/* Admin only: upload, tests, aliases */}
-            {(role === 'ADMIN' || !currentUser) && (
+            {role === 'ADMIN' && (
               <>
                 <button
                   id="btn-upload-file"

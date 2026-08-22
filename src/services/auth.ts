@@ -22,6 +22,7 @@ SCOPES.forEach(scope => provider.addScope(scope));
 
 const TOKEN_STORAGE_KEY = 'airox_google_sheets_token';
 const USER_STORAGE_KEY = 'airox_auth_user';
+const SESSION_STORAGE_KEY = 'airox_session_token';
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = typeof window !== 'undefined' ? localStorage.getItem(TOKEN_STORAGE_KEY) : null;
@@ -68,26 +69,107 @@ export const setStoredUser = (user: AppUser | null) => {
 };
 
 /**
- * Standard Auth Request Headers to attach user email and OAuth token
+ * Standard Auth Request Headers with Bearer session token
  */
 export const getAuthHeaders = (): Record<string, string> => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
   };
 
-  const user = getStoredUser();
-  if (user?.email) {
-    headers['x-user-email'] = user.email;
-  }
-
-  const token = cachedAccessToken || (typeof window !== 'undefined' ? localStorage.getItem(TOKEN_STORAGE_KEY) : null);
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  } else if (user?.email) {
-    headers['Authorization'] = `Bearer ${user.email}`;
+  if (typeof window !== 'undefined') {
+    const sessionToken = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (sessionToken) {
+      headers['Authorization'] = `Bearer ${sessionToken}`;
+    }
   }
 
   return headers;
+};
+
+/**
+ * Username + Password Authentication
+ */
+export const loginWithCredentials = async (
+  usernameOrEmail: string,
+  passwordAttempt: string
+): Promise<{ user: AppUser; mustChangePassword: boolean }> => {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      username: usernameOrEmail.trim(),
+      password: passwordAttempt
+    })
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Invalid username or password.');
+  }
+
+  if (data.token && typeof window !== 'undefined') {
+    localStorage.setItem(SESSION_STORAGE_KEY, data.token);
+  }
+
+  setStoredUser(data.user);
+  return {
+    user: data.user,
+    mustChangePassword: Boolean(data.mustChangePassword)
+  };
+};
+
+/**
+ * Change Password (first login or self-service)
+ */
+export const changePasswordApi = async (
+  newPassword: string,
+  currentPassword?: string,
+  userId?: string
+): Promise<AppUser> => {
+  const res = await fetch('/api/auth/change-password', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      newPassword,
+      currentPassword,
+      userId
+    })
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to update password.');
+  }
+
+  setStoredUser(data.user);
+  return data.user;
+};
+
+/**
+ * Admin Reset User Password
+ */
+export const resetUserPasswordApi = async (
+  userId: string,
+  newPassword?: string
+): Promise<{ user: AppUser; temporaryPassword?: string; message: string }> => {
+  const res = await fetch(`/api/auth/users/${encodeURIComponent(userId)}/reset-password`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ newPassword })
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Failed to reset password.');
+  }
+
+  return {
+    user: data.user,
+    temporaryPassword: data.temporaryPassword,
+    message: data.message || 'Password reset successfully'
+  };
 };
 
 /**
@@ -111,9 +193,7 @@ export const googleSignIn = async (): Promise<{ user: User; appUser: AppUser; ac
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${result.user.email}`,
-        'x-user-email': result.user.email || ''
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         email: result.user.email,
@@ -127,6 +207,10 @@ export const googleSignIn = async (): Promise<{ user: User; appUser: AppUser; ac
       throw new Error(data.error || 'Access Denied: Your Google account is not authorized for this symposium portal.');
     }
 
+    if (data.token && typeof window !== 'undefined') {
+      localStorage.setItem(SESSION_STORAGE_KEY, data.token);
+    }
+
     setStoredUser(data.user);
     return {
       user: result.user,
@@ -134,7 +218,6 @@ export const googleSignIn = async (): Promise<{ user: User; appUser: AppUser; ac
       accessToken
     };
   } catch (error: any) {
-    // Gracefully handle user cancelling the OAuth popup
     if (
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request' ||
@@ -152,34 +235,15 @@ export const googleSignIn = async (): Promise<{ user: User; appUser: AppUser; ac
 };
 
 /**
- * Switch persona / test account (for testing all roles directly)
- */
-export const switchTestPersona = async (email: string): Promise<AppUser> => {
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-email': email
-    },
-    body: JSON.stringify({ email })
-  });
-
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || `Unable to switch to persona: ${email}`);
-  }
-
-  setStoredUser(data.user);
-  return data.user;
-};
-
-/**
  * Fetch current user profile from server
  */
 export const checkCurrentSession = async (): Promise<AppUser | null> => {
   try {
-    const user = getStoredUser();
-    if (!user) return null;
+    const sessionToken = typeof window !== 'undefined' ? localStorage.getItem(SESSION_STORAGE_KEY) : null;
+    if (!sessionToken) {
+      setStoredUser(null);
+      return null;
+    }
 
     const res = await fetch('/api/auth/me', {
       headers: getAuthHeaders()
@@ -187,6 +251,9 @@ export const checkCurrentSession = async (): Promise<AppUser | null> => {
 
     if (!res.ok) {
       setStoredUser(null);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+      }
       return null;
     }
 
@@ -210,13 +277,14 @@ export const logout = async () => {
       method: 'POST',
       headers: getAuthHeaders()
     }).catch(() => {});
-    await signOut(auth);
+    await signOut(auth).catch(() => {});
   } catch (e) {
     console.warn('Sign out error:', e);
   } finally {
     cachedAccessToken = null;
     setStoredUser(null);
     if (typeof window !== 'undefined') {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
       localStorage.removeItem(TOKEN_STORAGE_KEY);
       localStorage.removeItem(USER_STORAGE_KEY);
     }
@@ -246,16 +314,23 @@ export const setCachedAccessToken = (token: string | null) => {
 // ROLE & PERMISSION HELPERS
 // ==========================================
 
+export function userHasRole(user: AppUser | null, role: UserRole): boolean {
+  if (!user || user.status !== 'ACTIVE') return false;
+  if (user.role === role) return true;
+  if (user.secondaryRoles && user.secondaryRoles.includes(role)) return true;
+  return false;
+}
+
 export function canAccessEvent(user: AppUser | null, eventNameOrKey: string): boolean {
   if (!user || user.status !== 'ACTIVE') return false;
 
-  // ADMIN and DATABASE have global participant access for all events
-  if (user.role === 'ADMIN' || user.role === 'DATABASE') {
+  // ADMIN, DATABASE, REGISTRATION have global access for all events
+  if (user.role === 'ADMIN' || userHasRole(user, 'DATABASE') || userHasRole(user, 'REGISTRATION')) {
     return true;
   }
 
   // EVENT_COORDINATOR scoped strictly to assigned events
-  if (user.role === 'EVENT_COORDINATOR') {
+  if (userHasRole(user, 'EVENT_COORDINATOR')) {
     if (!user.assignedEvents || user.assignedEvents.length === 0) return false;
     const normalize = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const target = normalize(eventNameOrKey);
@@ -266,18 +341,17 @@ export function canAccessEvent(user: AppUser | null, eventNameOrKey: string): bo
     });
   }
 
-  // CERTIFICATE and ON_SPOT do not have access to general participants extractor
   return false;
 }
 
 export function canExportEvent(user: AppUser | null, eventNameOrKey: string): boolean {
   if (!user || user.status !== 'ACTIVE') return false;
 
-  if (user.role === 'ADMIN' || user.role === 'DATABASE') {
+  if (user.role === 'ADMIN' || userHasRole(user, 'DATABASE')) {
     return true;
   }
 
-  if (user.role === 'EVENT_COORDINATOR') {
+  if (userHasRole(user, 'EVENT_COORDINATOR')) {
     return canAccessEvent(user, eventNameOrKey);
   }
 
@@ -289,39 +363,49 @@ export function canManageUsers(user: AppUser | null): boolean {
 }
 
 export function canCreateOffline(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'ON_SPOT'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'ON_SPOT')));
 }
 
 export function canEditOffline(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'ON_SPOT'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'ON_SPOT')));
 }
 
 export function canCancelOffline(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'ON_SPOT'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'ON_SPOT')));
 }
 
 export function canViewAllParticipants(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'DATABASE'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'DATABASE') || userHasRole(user, 'REGISTRATION')));
 }
 
 export function canAccessParticipantsSection(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'DATABASE' || user.role === 'EVENT_COORDINATOR'));
+  return Boolean(user && user.status === 'ACTIVE' && (
+    user.role === 'ADMIN' ||
+    userHasRole(user, 'DATABASE') ||
+    userHasRole(user, 'REGISTRATION') ||
+    userHasRole(user, 'EVENT_COORDINATOR')
+  ));
 }
 
 export function canAccessEventsMatrix(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'DATABASE'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'DATABASE')));
 }
 
 export function canAccessCertificateDesk(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'CERTIFICATE'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'CERTIFICATE')));
 }
 
 export function canModifyCertificateStatus(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'CERTIFICATE'));
+  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || userHasRole(user, 'CERTIFICATE')));
 }
 
 export function canSyncData(user: AppUser | null): boolean {
-  return Boolean(user && user.status === 'ACTIVE' && (user.role === 'ADMIN' || user.role === 'DATABASE' || user.role === 'ON_SPOT' || user.role === 'EVENT_COORDINATOR'));
+  return Boolean(user && user.status === 'ACTIVE' && (
+    user.role === 'ADMIN' ||
+    userHasRole(user, 'DATABASE') ||
+    userHasRole(user, 'ON_SPOT') ||
+    userHasRole(user, 'EVENT_COORDINATOR')
+  ));
 }
 
 // ==========================================
@@ -409,10 +493,15 @@ export async function fetchUsersList(): Promise<AppUser[]> {
 
 export async function createUser(userData: {
   name: string;
-  email: string;
+  username?: string;
+  email?: string;
   role: UserRole;
+  secondaryRoles?: UserRole[];
   status?: UserStatus;
   assignedEvents?: string[];
+  teamName?: string;
+  yearSection?: string;
+  password?: string;
 }): Promise<AppUser> {
   const res = await fetch('/api/auth/users', {
     method: 'POST',
@@ -431,9 +520,14 @@ export async function updateUser(
   id: string,
   updates: {
     name?: string;
+    username?: string;
+    email?: string;
     role?: UserRole;
+    secondaryRoles?: UserRole[];
     status?: UserStatus;
     assignedEvents?: string[];
+    teamName?: string;
+    yearSection?: string;
   }
 ): Promise<AppUser> {
   const res = await fetch(`/api/auth/users/${encodeURIComponent(id)}`, {

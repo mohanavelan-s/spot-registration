@@ -452,3 +452,69 @@ export class OfflineApiClient {
 
 export const offlineApiClient = new OfflineApiClient();
 export const defaultSheetsClient = offlineApiClient;
+
+export class OnlineApiClient {
+  private async getAuthHeaders(): Promise<Record<string, string>> {
+    return getAuthHeaders();
+  }
+
+  async fetchRegistrations(): Promise<{
+    success: boolean;
+    rows: any[];
+    headers: string[];
+    source: 'GOOGLE_SHEETS' | 'UNCONFIGURED' | 'FALLBACK';
+    count: number;
+    sheetId?: string;
+    warning?: string;
+  }> {
+    const headers = await this.getAuthHeaders();
+    const res = await fetch('/api/online/registrations', { headers });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || 'Failed to fetch online registrations');
+    }
+    return await res.json();
+  }
+
+  async syncRegistrations(): Promise<{
+    success: boolean;
+    rows: any[];
+    headers: string[];
+    source: 'GOOGLE_SHEETS' | 'UNCONFIGURED' | 'FALLBACK';
+    count: number;
+    sheetId?: string;
+    warning?: string;
+  }> {
+    const headers = await this.getAuthHeaders();
+    const res = await fetch('/api/online/sync', { method: 'POST', headers });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || 'Failed to sync online registrations');
+    }
+    return await res.json();
+  }
+
+  async getConfig(): Promise<{ sheetId: string; isGoogleAuthReady: boolean }> {
+    const headers = await this.getAuthHeaders();
+    const res = await fetch('/api/online/config', { headers });
+    if (!res.ok) return { sheetId: '', isGoogleAuthReady: false };
+    return await res.json();
+  }
+
+  async setConfig(sheetId: string): Promise<{ success: boolean; sheetId: string; isGoogleAuthReady: boolean }> {
+    const headers = await this.getAuthHeaders();
+    const res = await fetch('/api/online/config', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sheetId })
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || 'Failed to update Online Sheet ID.');
+    }
+    return await res.json();
+  }
+}
+
+export const onlineApiClient = new OnlineApiClient();
+

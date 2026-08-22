@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, FileSpreadsheet, CheckCircle, ExternalLink, RefreshCw, AlertCircle, ShieldCheck, PlayCircle, Wrench } from 'lucide-react';
-import { offlineApiClient } from '../../services/googleSheetsService';
+import { X, FileSpreadsheet, CheckCircle, ExternalLink, RefreshCw, AlertCircle, ShieldCheck, PlayCircle, Wrench, Globe } from 'lucide-react';
+import { offlineApiClient, onlineApiClient } from '../../services/googleSheetsService';
 
 interface GoogleSheetConfigModalProps {
   isOpen: boolean;
@@ -18,6 +18,7 @@ export const GoogleSheetConfigModal: React.FC<GoogleSheetConfigModalProps> = ({
   onRefreshData
 }) => {
   const [inputSheetId, setInputSheetId] = useState(sheetId);
+  const [onlineSheetId, setOnlineSheetId] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isRunningDiag, setIsRunningDiag] = useState(false);
@@ -26,14 +27,24 @@ export const GoogleSheetConfigModal: React.FC<GoogleSheetConfigModalProps> = ({
 
   useEffect(() => {
     setInputSheetId(sheetId);
-  }, [sheetId]);
+    // Also load online sheet id config
+    onlineApiClient.getConfig().then(cfg => {
+      if (cfg && cfg.sheetId) {
+        setOnlineSheetId(cfg.sheetId);
+      }
+    }).catch(() => {});
+  }, [sheetId, isOpen]);
 
   if (!isOpen) return null;
 
   const handleSave = async () => {
     const cleanId = inputSheetId.trim();
+    const cleanOnlineId = onlineSheetId.trim();
     try {
       await offlineApiClient.setConfig(cleanId);
+      if (cleanOnlineId !== undefined) {
+        await onlineApiClient.setConfig(cleanOnlineId);
+      }
       onSaveSheetId(cleanId);
       setStatusMessage({ type: 'success', text: 'Google Sheet configuration saved to server!' });
       await onRefreshData();
@@ -133,6 +144,45 @@ export const GoogleSheetConfigModal: React.FC<GoogleSheetConfigModalProps> = ({
             </div>
           )}
 
+          {/* Actionable Permissions Guide Banner */}
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-xs flex items-center gap-1.5 text-amber-900">
+                <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                Google Sheet Access & Permission Setup
+              </span>
+              <span className="text-[10px] font-semibold bg-amber-200 text-amber-900 px-2 py-0.5 rounded">
+                Required for 403 Errors
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-900 leading-relaxed">
+              If you receive <code className="bg-amber-100 px-1 py-0.5 rounded font-mono text-amber-950 font-bold">Permission Denied (403)</code>, your Google Spreadsheet is not shared with the backend service account. Follow these 2 quick steps:
+            </p>
+            <ol className="list-decimal list-inside text-[11px] space-y-1.5 pl-1 text-amber-900 font-medium">
+              <li>
+                Open your Google Sheet and click the green/blue <b>Share</b> button in the top-right.
+              </li>
+              <li>
+                Add the backend service account email below as an <b>Editor</b> and uncheck "Notify people":
+              </li>
+            </ol>
+            <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-amber-100/90 border border-amber-300">
+              <code className="font-mono text-[10.5px] font-bold text-amber-950 break-all select-all">
+                firebase-adminsdk-fbsvc@gen-lang-client-0668725337.iam.gserviceaccount.com
+              </code>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText('firebase-adminsdk-fbsvc@gen-lang-client-0668725337.iam.gserviceaccount.com');
+                  setStatusMessage({ type: 'info', text: 'Service account email copied to clipboard!' });
+                }}
+                className="px-2.5 py-1 rounded bg-amber-800 hover:bg-amber-900 text-white font-bold text-[10px] shrink-0 transition"
+              >
+                Copy Email
+              </button>
+            </div>
+          </div>
+
           {/* Architecture Details Banner */}
           <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-2">
             <div className="flex items-center justify-between">
@@ -150,27 +200,43 @@ export const GoogleSheetConfigModal: React.FC<GoogleSheetConfigModalProps> = ({
             </p>
           </div>
 
-          {/* Sheet ID Input */}
-          <div className="space-y-1.5">
-            <label className="block font-bold text-slate-700 mb-1">
-              Google Spreadsheet ID (<code className="font-mono text-emerald-700">OFFLINE_REGISTRATION_SHEET_ID</code>)
-            </label>
-            <div className="flex gap-2">
+          {/* Sheet ID Inputs */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="block font-bold text-slate-700">
+                Offline Registration Sheet ID (<code className="font-mono text-emerald-700">OFFLINE_REGISTRATION_SHEET_ID</code>)
+              </label>
               <input
                 type="text"
                 placeholder="e.g. 1CttdPVNnjildPxfPA40rIw-8NnvU_qxG3zgSesmV6mQ"
                 value={inputSheetId}
                 onChange={e => setInputSheetId(e.target.value)}
-                className="flex-1 px-3.5 py-2 rounded-xl border border-slate-300 font-mono text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition"
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-300 font-mono text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition"
               />
-              <button
-                type="button"
-                onClick={handleSave}
-                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold transition shrink-0"
-              >
-                Save
-              </button>
             </div>
+
+            <div className="space-y-1">
+              <label className="block font-bold text-slate-700">
+                Online Registration Sheet ID (<code className="font-mono text-sky-700">ONLINE_REGISTRATION_SHEET_ID</code>)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Optional Google Sheet ID for online registrations"
+                  value={onlineSheetId}
+                  onChange={e => setOnlineSheetId(e.target.value)}
+                  className="flex-1 px-3.5 py-2 rounded-xl border border-slate-300 font-mono text-xs focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition"
+                />
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold transition shrink-0"
+                >
+                  Save All
+                </button>
+              </div>
+            </div>
+
             <p className="text-[11px] text-slate-500">
               Extracted from URL: <code className="text-slate-600 font-mono">docs.google.com/spreadsheets/d/<b>[SHEET_ID]</b>/edit</code>
             </p>

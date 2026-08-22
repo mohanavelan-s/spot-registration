@@ -54,7 +54,11 @@ async function startServer() {
           error: 'Unauthorized: Please sign in.'
         });
       }
-      if (!allowedRoles.includes(req.user.role)) {
+      const hasAllowedRole =
+        allowedRoles.includes(req.user.role) ||
+        (req.user.secondaryRoles && req.user.secondaryRoles.some(r => allowedRoles.includes(r)));
+
+      if (!hasAllowedRole) {
         serverAuthService.logAudit({
           userEmail: req.user.email,
           userName: req.user.name,
@@ -114,74 +118,123 @@ async function startServer() {
     });
   });
 
-  // Login handler
+  // Login handler (Supports Username/Password Credentials and OAuth)
   app.post('/api/auth/login', (req: AuthenticatedRequest, res: Response) => {
-    const { email, name, picture } = req.body;
-    if (!email) {
-      return res.status(400).json({ success: false, error: 'Email is required for authentication.' });
-    }
+    try {
+      const { username, password, email, name, picture } = req.body;
 
-    const normalizedEmail = email.toLowerCase().trim();
-    let user = serverAuthService.getUserByEmail(normalizedEmail);
+      // A. Credentials Login (Username/Email + Password)
+      if (password !== undefined) {
+        const identifier = username || email;
+        if (!identifier) {
+          return res.status(400).json({ success: false, error: 'Username or email is required.' });
+        }
+        const authResult = serverAuthService.authenticateWithCredentials(identifier, password);
+        return res.json({
+          success: true,
+          token: authResult.token,
+          user: authResult.user,
+          mustChangePassword: authResult.mustChangePassword
+        });
+      }
 
-    // If matches primary admin email, ensure admin entry
-    if (!user && (normalizedEmail === 'mohanavelandev@gmail.com' || normalizedEmail === process.env.ADMIN_EMAIL?.toLowerCase())) {
-      user = serverAuthService.resolveUserFromHeaders({ 'x-user-email': normalizedEmail });
-    }
+      // B. OAuth Login (Google Sign-In)
+      if (!email) {
+        return res.status(400).json({ success: false, error: 'Email or Username + Password is required for authentication.' });
+      }
 
-    if (!user) {
-      serverAuthService.logAudit({
-        userEmail: normalizedEmail,
-        userName: name || 'Unknown User',
-        role: 'ANONYMOUS',
-        action: 'ACCESS_DENIED',
-        details: 'Login attempt by unregistered/unauthorized account.',
-        status: 'DENIED'
-      });
+      const normalizedEmail = email.toLowerCase().trim();
+      let user = serverAuthService.getUserByEmail(normalizedEmail) || serverAuthService.getUserByUsername(normalizedEmail);
 
-      return res.status(403).json({
-        success: false,
-        error: 'Access Denied: Your Google account is not authorized to access this symposium portal. Please contact an Administrator to assign your role.'
-      });
-    }
+      if (!user) {
+        serverAuthService.logAudit({
+          userEmail: normalizedEmail,
+          userName: name || 'Unknown User',
+          role: 'ANONYMOUS',
+          action: 'ACCESS_DENIED',
+          details: 'Login attempt by unregistered/unauthorized account.',
+          status: 'DENIED'
+        });
 
-    if (user.status !== 'ACTIVE') {
+        return res.status(403).json({
+          success: false,
+          error: 'Access Denied: Your Google account is not authorized to access this symposium portal. Please contact an Administrator to assign your role.'
+        });
+      }
+
+      if (user.status !== 'ACTIVE') {
+        serverAuthService.logAudit({
+          userEmail: user.email,
+          userName: user.name,
+          role: user.role,
+          action: 'ACCESS_DENIED',
+          details: 'Login attempt by disabled account.',
+          status: 'DENIED'
+        });
+
+        return res.status(403).json({
+          success: false,
+          error: 'Access Denied: Your account has been marked as INACTIVE. Please contact the symposium administrator.'
+        });
+      }
+
+      // Update last login
+      const updated = serverAuthService.updateUser(user.id, {}, user);
+      if (picture) updated.picture = picture;
+
+      // Create session for authenticated OAuth user
+      const session = serverAuthService.createSession(user.id);
+
       serverAuthService.logAudit({
         userEmail: user.email,
         userName: user.name,
         role: user.role,
-        action: 'ACCESS_DENIED',
-        details: 'Login attempt by disabled account.',
-        status: 'DENIED'
+        action: 'LOGIN',
+        details: `User logged in with role: ${user.role}`,
+        status: 'SUCCESS'
       });
 
-      return res.status(403).json({
-        success: false,
-        error: 'Access Denied: Your account has been marked as INACTIVE. Please contact the symposium administrator.'
+      res.json({
+        success: true,
+        token: session.token,
+        user: updated,
+        mustChangePassword: Boolean(updated.mustChangePassword)
       });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message || 'Authentication failed' });
     }
+  });
 
-    // Update last login
-    user.lastLoginAt = new Date().toISOString();
-    if (picture) user.picture = picture;
-
-    serverAuthService.logAudit({
-      userEmail: user.email,
-      userName: user.name,
-      role: user.role,
-      action: 'LOGIN',
-      details: `User logged in with role: ${user.role}`,
-      status: 'SUCCESS'
-    });
-
-    res.json({
-      success: true,
-      user
-    });
+  // Change Password endpoint (first login or self-service)
+  app.post('/api/auth/change-password', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { newPassword, currentPassword, userId } = req.body;
+      const targetId = req.user!.role === 'ADMIN' && userId ? userId : req.user!.id;
+      const updatedUser = serverAuthService.changePassword(
+        targetId,
+        newPassword,
+        currentPassword,
+        req.user!
+      );
+      res.json({
+        success: true,
+        user: updatedUser,
+        message: 'Password successfully updated.'
+      });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message || 'Password update failed' });
+    }
   });
 
   // Logout handler
   app.post('/api/auth/logout', (req: AuthenticatedRequest, res: Response) => {
+    const authHeader = req.headers['authorization'];
+    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+      serverAuthService.destroySession(authHeader.substring(7).trim());
+    } else if (typeof req.headers['x-session-token'] === 'string') {
+      serverAuthService.destroySession(req.headers['x-session-token'].trim());
+    }
+
     if (req.user) {
       serverAuthService.logAudit({
         userEmail: req.user.email,
@@ -204,13 +257,13 @@ async function startServer() {
   // Admin: Create new authorized user
   app.post('/api/auth/users', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { name, email, role, status, assignedEvents } = req.body;
-      if (!name || !email || !role) {
-        return res.status(400).json({ success: false, error: 'Name, email, and role are required.' });
+      const { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection, password } = req.body;
+      if (!name || !role) {
+        return res.status(400).json({ success: false, error: 'Name and role are required.' });
       }
 
       const newUser = serverAuthService.createUser(
-        { name, email, role, status, assignedEvents },
+        { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection, password },
         req.user!
       );
 
@@ -224,15 +277,32 @@ async function startServer() {
   app.put('/api/auth/users/:id', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const { name, role, status, assignedEvents } = req.body;
+      const { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection } = req.body;
 
       const updatedUser = serverAuthService.updateUser(
         id,
-        { name, role, status, assignedEvents },
+        { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection },
         req.user!
       );
 
       res.json({ success: true, user: updatedUser });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
+  // Admin: Reset password for user
+  app.post('/api/auth/users/:id/reset-password', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { newPassword } = req.body;
+      const result = serverAuthService.resetPassword(id, newPassword, req.user!);
+      res.json({
+        success: true,
+        user: result.user,
+        temporaryPassword: result.temporaryPassword,
+        message: 'Password reset successfully. The user will be prompted to set a new password on their next login.'
+      });
     } catch (err: any) {
       res.status(400).json({ success: false, error: err.message });
     }
@@ -393,11 +463,10 @@ async function startServer() {
     });
   });
 
-  // Comprehensive Diagnostics Endpoint
-  app.get('/api/offline/diagnostics', async (req: AuthenticatedRequest, res: Response) => {
+  // Comprehensive Diagnostics Endpoint (ADMIN only)
+  app.get('/api/offline/diagnostics', requireRole('ADMIN'), async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const authHeader = req.headers.authorization;
-      const diag = await serverSheetsService.runDiagnostics(authHeader);
+      const diag = await serverSheetsService.runDiagnostics();
       res.json(diag);
     } catch (err: any) {
       console.error('[API:Diagnostics] Error:', err);
@@ -408,11 +477,10 @@ async function startServer() {
     }
   });
 
-  // Diagnostic Test-Write (TEST-AIROX26)
+  // Diagnostic Test-Write (TEST-AIROX26) (ADMIN only)
   app.post('/api/offline/test-write', requireRole('ADMIN'), async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const authHeader = req.headers.authorization;
-      const result = await serverSheetsService.executeTestWrite(authHeader);
+      const result = await serverSheetsService.executeTestWrite();
       if (!result.success) {
         return res.status(500).json(result);
       }
@@ -422,13 +490,13 @@ async function startServer() {
       res.status(500).json({
         success: false,
         error: err.message || 'Test write failed',
-        message: 'Unable to write test record to Google Sheets.'
+        message: 'Unable to write test record.'
       });
     }
   });
 
-  // Get configuration (Admin only for full config)
-  app.get('/api/offline/config', (req, res) => {
+  // Get configuration (Authenticated users only)
+  app.get('/api/offline/config', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     res.json({
       sheetId: serverSheetsService.getSheetId(),
       isGoogleAuthReady: serverSheetsService.isAuthConfigured(),
@@ -437,7 +505,7 @@ async function startServer() {
     });
   });
 
-  // Update configuration (Admin only)
+  // Update configuration (ADMIN only)
   app.post('/api/offline/config', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
     const { sheetId } = req.body;
     if (typeof sheetId === 'string') {
@@ -452,33 +520,36 @@ async function startServer() {
     });
   });
 
-  // READ: Fetch all offline registrations directly from Google Sheets
-  app.get('/api/offline/registrations', async (req: AuthenticatedRequest, res: Response) => {
+  // READ: Fetch all offline registrations (Authenticated users)
+  app.get('/api/offline/registrations', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const authHeader = req.headers.authorization;
-      const result = await serverSheetsService.fetchRegistrations(authHeader);
+      const result = await serverSheetsService.fetchRegistrations();
       res.json({
         success: true,
         records: result.records,
         headers: result.headers,
         source: result.source,
-        sheetId: serverSheetsService.getSheetId()
+        sheetId: serverSheetsService.getSheetId(),
+        warning: result.warning
       });
     } catch (err: any) {
-      console.error('[API:Read] Error fetching offline registrations from Google Sheets:', err);
-      res.status(500).json({
-        success: false,
-        error: `Unable to fetch registrations from Google Sheets: ${err.message || 'Check spreadsheet permissions and API status.'}`,
-        details: err.message
+      console.warn('[API:Read] Notice fetching offline registrations:', err?.message || err);
+      const cached = serverSheetsService.getCachedRecords();
+      res.json({
+        success: true,
+        records: cached,
+        headers: serverSheetsService.getHeaders(),
+        source: 'LOCAL_BACKUP',
+        sheetId: serverSheetsService.getSheetId(),
+        warning: err.message || 'Serving local cached records due to temporary rate limit.'
       });
     }
   });
 
-  // SYNC: Force fresh sync from Google Sheets
-  app.post('/api/offline/sync', async (req: AuthenticatedRequest, res: Response) => {
+  // SYNC: Force fresh sync from Google Sheets (Authenticated users)
+  app.post('/api/offline/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const authHeader = req.headers.authorization;
-      const result = await serverSheetsService.fetchRegistrations(authHeader);
+      const result = await serverSheetsService.fetchRegistrations(true);
 
       if (req.user) {
         serverAuthService.logAudit({
@@ -486,7 +557,7 @@ async function startServer() {
           userName: req.user.name,
           role: req.user.role,
           action: 'DATA_SYNCED',
-          details: `Synchronized ${result.records.length} registrations from Google Sheets.`,
+          details: `Synchronized ${result.records.length} registrations.`,
           status: 'SUCCESS'
         });
       }
@@ -496,37 +567,26 @@ async function startServer() {
         records: result.records,
         headers: result.headers,
         source: result.source,
-        message: `Synchronized ${result.records.length} registrations with Google Sheets successfully.`
+        warning: result.warning,
+        message: result.warning || `Synchronized ${result.records.length} registrations successfully.`
       });
     } catch (err: any) {
-      console.error('[API:Sync] Error syncing with Google Sheets:', err);
-      res.status(500).json({
-        success: false,
-        error: `Unable to sync with Google Sheets: ${err.message || 'Check spreadsheet permissions and API status.'}`
+      console.warn('[API:Sync] Notice syncing offline registrations:', err?.message || err);
+      const cached = serverSheetsService.getCachedRecords();
+      res.json({
+        success: true,
+        records: cached,
+        headers: serverSheetsService.getHeaders(),
+        source: 'LOCAL_BACKUP',
+        warning: err.message || 'Serving local cached records due to temporary rate limit.',
+        message: `Served ${cached.length} local records (Google Sheets rate limit reached).`
       });
     }
   });
 
-  // CREATE: Append new registration to Google Sheets (Requires ADMIN or ON_SPOT)
-  app.post('/api/offline/registrations', async (req: AuthenticatedRequest, res: Response) => {
+  // CREATE: Append new registration (Requires ADMIN or ON_SPOT)
+  app.post('/api/offline/registrations', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
     try {
-      // Permission check: ADMIN or ON_SPOT
-      if (req.user && req.user.role !== 'ADMIN' && req.user.role !== 'ON_SPOT') {
-        serverAuthService.logAudit({
-          userEmail: req.user.email,
-          userName: req.user.name,
-          role: req.user.role,
-          action: 'ACCESS_DENIED',
-          details: 'Unauthorized attempt to create offline registration.',
-          status: 'DENIED'
-        });
-        return res.status(403).json({
-          success: false,
-          error: 'Forbidden: Creating offline registrations is restricted to ADMIN and ON_SPOT team members.'
-        });
-      }
-
-      const authHeader = req.headers.authorization;
       const { formData, coordinatorName } = req.body;
 
       if (!formData || !formData.fullName || !formData.mobile) {
@@ -555,8 +615,7 @@ async function startServer() {
           verificationStatus: formData.verificationStatus || 'Verified',
           registeredBy
         },
-        registeredBy,
-        authHeader
+        registeredBy
       );
 
       if (req.user) {
@@ -574,29 +633,21 @@ async function startServer() {
       res.status(201).json({
         success: true,
         record: newRecord,
-        message: `Offline Registration ${newRecord.offlineRegistrationId} saved to Google Sheets successfully.`
+        message: `Offline Registration ${newRecord.offlineRegistrationId} saved successfully.`
       });
     } catch (err: any) {
-      console.error('[API:Create] Error creating offline registration in Google Sheets:', err);
+      console.error('[API:Create] Error creating offline registration:', err);
       res.status(500).json({
         success: false,
-        error: `Unable to save registration to Google Sheets: ${err.message || 'API error'}`,
+        error: `Unable to save registration: ${err.message || 'Storage error'}`,
         details: err.message
       });
     }
   });
 
-  // UPDATE: Edit existing registration row in Google Sheets (ADMIN or ON_SPOT)
-  app.put('/api/offline/registrations/:id', async (req: AuthenticatedRequest, res: Response) => {
+  // UPDATE: Edit existing registration (ADMIN or ON_SPOT)
+  app.put('/api/offline/registrations/:id', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
     try {
-      if (req.user && req.user.role !== 'ADMIN' && req.user.role !== 'ON_SPOT') {
-        return res.status(403).json({
-          success: false,
-          error: 'Forbidden: Modifying offline registrations is restricted to ADMIN and ON_SPOT team members.'
-        });
-      }
-
-      const authHeader = req.headers.authorization;
       const { id } = req.params;
       const { updates, coordinatorName } = req.body;
 
@@ -608,8 +659,7 @@ async function startServer() {
       const updatedRecord = await serverSheetsService.updateRegistration(
         id,
         updates,
-        updater,
-        authHeader
+        updater
       );
 
       if (req.user) {
@@ -627,28 +677,20 @@ async function startServer() {
       res.json({
         success: true,
         record: updatedRecord,
-        message: `Record ${id} updated in Google Sheets successfully.`
+        message: `Record ${id} updated successfully.`
       });
     } catch (err: any) {
       console.error(`[API:Update] Error updating registration ${req.params.id}:`, err);
       res.status(500).json({
         success: false,
-        error: `Unable to update registration in Google Sheets: ${err.message || 'API error'}`
+        error: `Unable to update registration: ${err.message || 'Storage error'}`
       });
     }
   });
 
-  // CANCEL: Soft delete registration in Google Sheets (ADMIN or ON_SPOT)
-  app.post('/api/offline/registrations/:id/cancel', async (req: AuthenticatedRequest, res: Response) => {
+  // CANCEL: Soft delete registration (ADMIN or ON_SPOT)
+  app.post('/api/offline/registrations/:id/cancel', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
     try {
-      if (req.user && req.user.role !== 'ADMIN' && req.user.role !== 'ON_SPOT') {
-        return res.status(403).json({
-          success: false,
-          error: 'Forbidden: Cancelling registrations is restricted to ADMIN and ON_SPOT team members.'
-        });
-      }
-
-      const authHeader = req.headers.authorization;
       const { id } = req.params;
       const { coordinatorName } = req.body;
 
@@ -659,8 +701,7 @@ async function startServer() {
       const canceller = coordinatorName || req.user?.name || 'Desk Admin';
       const cancelledRecord = await serverSheetsService.cancelRegistration(
         id,
-        canceller,
-        authHeader
+        canceller
       );
 
       if (req.user) {
@@ -678,28 +719,20 @@ async function startServer() {
       res.json({
         success: true,
         record: cancelledRecord,
-        message: `Record ${id} status set to CANCELLED in Google Sheets.`
+        message: `Record ${id} status set to CANCELLED.`
       });
     } catch (err: any) {
       console.error(`[API:Cancel] Error cancelling registration ${req.params.id}:`, err);
       res.status(500).json({
         success: false,
-        error: `Unable to cancel registration in Google Sheets: ${err.message || 'API error'}`
+        error: `Unable to cancel registration: ${err.message || 'Storage error'}`
       });
     }
   });
 
-  // RESTORE: Set status back to 'ACTIVE' in Google Sheets
-  app.post('/api/offline/registrations/:id/restore', async (req: AuthenticatedRequest, res: Response) => {
+  // RESTORE: Set status back to 'ACTIVE' (ADMIN or ON_SPOT)
+  app.post('/api/offline/registrations/:id/restore', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
     try {
-      if (req.user && req.user.role !== 'ADMIN' && req.user.role !== 'ON_SPOT') {
-        return res.status(403).json({
-          success: false,
-          error: 'Forbidden: Restoring registrations is restricted to ADMIN and ON_SPOT team members.'
-        });
-      }
-
-      const authHeader = req.headers.authorization;
       const { id } = req.params;
       const { coordinatorName } = req.body;
 
@@ -710,8 +743,7 @@ async function startServer() {
       const restorer = coordinatorName || req.user?.name || 'Desk Admin';
       const restoredRecord = await serverSheetsService.restoreRegistration(
         id,
-        restorer,
-        authHeader
+        restorer
       );
 
       if (req.user) {
@@ -729,13 +761,88 @@ async function startServer() {
       res.json({
         success: true,
         record: restoredRecord,
-        message: `Record ${id} restored to ACTIVE in Google Sheets.`
+        message: `Record ${id} restored to ACTIVE.`
       });
     } catch (err: any) {
       console.error(`[API:Restore] Error restoring registration ${req.params.id}:`, err);
       res.status(500).json({
         success: false,
-        error: `Unable to restore registration in Google Sheets: ${err.message || 'API error'}`
+        error: `Unable to restore registration: ${err.message || 'Storage error'}`
+      });
+    }
+  });
+
+  // --- ONLINE REGISTRATIONS APIS ---
+
+  // Get Online Google Sheet config
+  app.get('/api/online/config', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+    res.json({
+      sheetId: serverSheetsService.getOnlineSheetId(),
+      isGoogleAuthReady: serverSheetsService.isAuthConfigured()
+    });
+  });
+
+  // Update Online Google Sheet config (ADMIN only)
+  app.post('/api/online/config', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+    const { sheetId } = req.body;
+    if (typeof sheetId === 'string') {
+      serverSheetsService.setOnlineSheetId(sheetId);
+    }
+    res.json({
+      success: true,
+      sheetId: serverSheetsService.getOnlineSheetId(),
+      isGoogleAuthReady: serverSheetsService.isAuthConfigured()
+    });
+  });
+
+  // Fetch Online registrations
+  app.get('/api/online/registrations', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const result = await serverSheetsService.fetchOnlineRegistrations();
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      console.warn('[API:Online] Notice fetching online registrations:', err?.message || err);
+      res.status(200).json({
+        success: true,
+        rows: [],
+        headers: [],
+        source: 'FALLBACK',
+        count: 0,
+        warning: err.message || 'Unable to fetch online registrations'
+      });
+    }
+  });
+
+  // Sync / Refresh Online registrations
+  app.post('/api/online/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const result = await serverSheetsService.fetchOnlineRegistrations();
+      if (req.user) {
+        serverAuthService.logAudit({
+          userEmail: req.user.email,
+          userName: req.user.name,
+          role: req.user.role,
+          action: 'DATA_SYNCED',
+          details: `Synchronized ${result.count || 0} online registrations from Google Sheets.`,
+          status: 'SUCCESS'
+        });
+      }
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      console.warn('[API:OnlineSync] Notice syncing online registrations:', err?.message || err);
+      res.status(200).json({
+        success: true,
+        rows: [],
+        headers: [],
+        source: 'FALLBACK',
+        count: 0,
+        warning: err.message || 'Unable to sync online registrations'
       });
     }
   });

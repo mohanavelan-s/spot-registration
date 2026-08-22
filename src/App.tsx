@@ -14,6 +14,7 @@ import { UserManagementPage } from './components/UserManagement/UserManagementPa
 import { CertificateDeskPage } from './components/CertificateDesk/CertificateDeskPage';
 import { RoleSwitcherBar } from './components/Auth/RoleSwitcherBar';
 import { LoginModal } from './components/Auth/LoginModal';
+import { ChangePasswordModal } from './components/Auth/ChangePasswordModal';
 import { AccessDeniedView } from './components/Auth/AccessDeniedView';
 import {
   ColumnMapping,
@@ -30,36 +31,26 @@ import { parseRegistrationFile, processRawRows, detectColumnMapping } from './ut
 import { extractParticipants } from './utils/extractor';
 import { exportToCSV, exportToXLSX } from './utils/exporter';
 import { combineDatasets } from './utils/combinedEngine';
-import { offlineApiClient } from './services/googleSheetsService';
+import { offlineApiClient, onlineApiClient } from './services/googleSheetsService';
 import {
   getStoredUser,
   setStoredUser,
   checkCurrentSession,
-  switchTestPersona,
   logout,
   canAccessEvent,
   canExportEvent,
-  canManageUsers
+  canManageUsers,
+  userHasRole
 } from './services/auth';
 import { SAMPLE_AIROX26_RAW_DATA } from './data/sampleDataset';
 import { DEFAULT_EVENT_REGISTRY } from './config/defaultAliases';
 
 export default function App() {
-  // Auth and Session state (Default to Admin persona for immediate sandbox exploration)
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
-    const stored = getStoredUser();
-    if (stored) return stored;
-    return {
-      id: 'usr-admin-1',
-      email: 'mohanavelandev@gmail.com',
-      name: 'Mohanavelan Dev',
-      role: 'ADMIN',
-      status: 'ACTIVE',
-      assignedEvents: []
-    };
-  });
+  // Auth and Session state (Real token-based authentication)
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getStoredUser());
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-  const [isSwitchingPersona, setIsSwitchingPersona] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isMandatoryPasswordChange, setIsMandatoryPasswordChange] = useState(false);
 
   // Normalizer instance state
   const [registry, setRegistry] = useState<EventAliasMap>(DEFAULT_EVENT_REGISTRY);
@@ -108,37 +99,36 @@ export default function App() {
     checkCurrentSession().then(user => {
       if (user) {
         setCurrentUser(user);
+        if (user.mustChangePassword) {
+          setIsMandatoryPasswordChange(true);
+          setIsChangePasswordOpen(true);
+        }
+      } else {
+        setCurrentUser(null);
       }
     });
   }, []);
 
-  // When switching personas or logging in
-  const handleSwitchPersona = async (email: string) => {
-    setIsSwitchingPersona(true);
-    try {
-      const user = await switchTestPersona(email);
-      setCurrentUser(user);
-      // Adjust view if needed based on role
-      if (user.role === 'ON_SPOT') {
-        setCurrentView('offline');
-      } else if (user.role === 'EVENT_COORDINATOR') {
-        setCurrentView('extractor');
-        if (user.assignedEvents && user.assignedEvents.length > 0) {
-          const firstEventKey = user.assignedEvents[0].toLowerCase();
-          setFilterState(prev => ({ ...prev, selectedEventKey: firstEventKey, page: 1 }));
-        }
-      } else if (user.role === 'CERTIFICATE') {
-        setCurrentView('certificates');
-      } else if (user.role === 'DATABASE') {
-        setCurrentView('extractor');
-        setFilterState(prev => ({ ...prev, selectedEventKey: null, page: 1 }));
-      } else if (user.role === 'ADMIN') {
-        setCurrentView('extractor');
+  const handleLoginSuccess = (user: AppUser, mustChange?: boolean) => {
+    setCurrentUser(user);
+    if (mustChange || user.mustChangePassword) {
+      setIsMandatoryPasswordChange(true);
+      setIsChangePasswordOpen(true);
+    }
+    // Set initial view based on role
+    if (user.role === 'ON_SPOT') {
+      setCurrentView('offline');
+    } else if (user.role === 'EVENT_COORDINATOR') {
+      setCurrentView('extractor');
+      if (user.assignedEvents && user.assignedEvents.length > 0) {
+        const firstEventKey = user.assignedEvents[0].toLowerCase();
+        setFilterState(prev => ({ ...prev, selectedEventKey: firstEventKey, page: 1 }));
       }
-    } catch (err: any) {
-      alert(err.message || 'Failed to switch persona');
-    } finally {
-      setIsSwitchingPersona(false);
+    } else if (user.role === 'CERTIFICATE') {
+      setCurrentView('certificates');
+    } else if (user.role === 'DATABASE') {
+      setCurrentView('extractor');
+      setFilterState(prev => ({ ...prev, selectedEventKey: null, page: 1 }));
     }
   };
 
@@ -189,6 +179,39 @@ export default function App() {
     }
   }, [normalizer, currentUser]);
 
+  // Fetch Online Registrations (Google Sheet or fallback to sample dataset)
+  const fetchOnlineData = useCallback(async (isManualSync: boolean = false) => {
+    try {
+      const res = isManualSync 
+        ? await onlineApiClient.syncRegistrations() 
+        : await onlineApiClient.fetchRegistrations();
+
+      if (res.source === 'GOOGLE_SHEETS' && res.rows && res.rows.length > 0) {
+        const columnMapping = detectColumnMapping(res.headers);
+        const { participants, detectedEvents, warnings } = processRawRows(
+          res.rows,
+          columnMapping,
+          normalizer
+        );
+        setParseResult({
+          fileName: `Google Sheet (ONLINE_REGISTRATION_SHEET_ID)`,
+          fileSize: 1024 * res.rows.length,
+          totalRegistrations: participants.length,
+          participants,
+          detectedEvents,
+          columnMapping,
+          warnings,
+          errors: []
+        });
+      } else {
+        loadSampleDataset();
+      }
+    } catch (err: any) {
+      console.warn('[OnlineFetch] Notice:', err);
+      loadSampleDataset();
+    }
+  }, [normalizer, loadSampleDataset]);
+
   // Fetch Offline Registrations from Google Sheets / persistent storage
   const fetchOfflineData = useCallback(async () => {
     setIsOfflineLoading(true);
@@ -206,20 +229,53 @@ export default function App() {
     }
   }, []);
 
-  // Sync Offline & Online Data
+  // Sync Both Offline & Online Data
   const handleSyncData = async () => {
     setIsOfflineLoading(true);
+    let errorMessages: string[] = [];
+
+    // 1. Sync Offline Registrations
     try {
       const res = await offlineApiClient.syncRegistrations();
       setOfflineRecords(res.records);
       setOfflineSourceType(res.source);
       setOfflineError(null);
-      setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (err: any) {
-      console.error('Manual sync failed:', err);
-      setOfflineError(err.message || 'Sync failed');
-    } finally {
-      setIsOfflineLoading(false);
+      console.error('Offline sync failed:', err);
+      setOfflineError(err.message || 'Offline sync failed');
+      errorMessages.push(`Offline: ${err.message || 'Sync failed'}`);
+    }
+
+    // 2. Sync Online Registrations
+    try {
+      const res = await onlineApiClient.syncRegistrations();
+      if (res.source === 'GOOGLE_SHEETS' && res.rows && res.rows.length > 0) {
+        const columnMapping = detectColumnMapping(res.headers);
+        const { participants, detectedEvents, warnings } = processRawRows(
+          res.rows,
+          columnMapping,
+          normalizer
+        );
+        setParseResult({
+          fileName: `Google Sheet (ONLINE_REGISTRATION_SHEET_ID)`,
+          fileSize: 1024 * res.rows.length,
+          totalRegistrations: participants.length,
+          participants,
+          detectedEvents,
+          columnMapping,
+          warnings,
+          errors: []
+        });
+      }
+    } catch (err: any) {
+      console.warn('Online sync notice:', err);
+    }
+
+    setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    setIsOfflineLoading(false);
+
+    if (errorMessages.length > 0) {
+      throw new Error(errorMessages.join('. '));
     }
   };
 
@@ -229,11 +285,11 @@ export default function App() {
     setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
   }, []);
 
-  // Load default dataset & fetch offline data on initial mount
+  // Load online dataset & fetch offline data on initial mount
   useEffect(() => {
-    loadSampleDataset();
+    fetchOnlineData(false);
     fetchOfflineData();
-  }, [loadSampleDataset, fetchOfflineData]);
+  }, [fetchOnlineData, fetchOfflineData]);
 
   // Handle uploaded online file
   const handleFileUpload = async (file: File) => {
@@ -435,13 +491,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex flex-col font-sans antialiased">
-      {/* Top Testing Persona & Role Bar */}
+      {/* Top Authenticated User & Role Session Bar */}
       <RoleSwitcherBar
         currentUser={currentUser}
         onLoginClick={() => setIsLoginModalOpen(true)}
         onLogoutClick={handleLogout}
-        onSwitchPersona={handleSwitchPersona}
-        isSwitching={isSwitchingPersona}
+        onChangePasswordClick={() => {
+          setIsMandatoryPasswordChange(false);
+          setIsChangePasswordOpen(true);
+        }}
       />
 
       {/* Main Navigation Bar */}
@@ -485,7 +543,7 @@ export default function App() {
           )
         ) : currentView === 'certificates' ? (
           /* Dedicated Certificate Desk (Admin & Certificate Team ONLY) */
-          currentUser.role === 'ADMIN' || currentUser.role === 'CERTIFICATE' ? (
+          currentUser.role === 'ADMIN' || userHasRole(currentUser, 'CERTIFICATE') ? (
             <CertificateDeskPage
               participants={combinedData.combinedParticipants}
               currentUser={currentUser}
@@ -496,7 +554,7 @@ export default function App() {
           )
         ) : currentView === 'offline' ? (
           /* Dedicated Google Sheets Offline Registration Desk */
-          currentUser.role === 'ADMIN' || currentUser.role === 'ON_SPOT' ? (
+          currentUser.role === 'ADMIN' || userHasRole(currentUser, 'ON_SPOT') || userHasRole(currentUser, 'REGISTRATION') ? (
             <OfflineRegistrationPage
               onlineParticipants={parseResult?.participants || []}
               onRecordsChange={handleOfflineRecordsChange}
@@ -506,7 +564,7 @@ export default function App() {
           )
         ) : currentView === 'matrix' ? (
           /* Master Symposium Matrix (Admin & Database) */
-          currentUser.role === 'ADMIN' || currentUser.role === 'DATABASE' ? (
+          currentUser.role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') ? (
             <AllEventsOverview
               detectedEvents={combinedData.combinedEvents}
               participants={combinedData.combinedParticipants}
@@ -518,7 +576,7 @@ export default function App() {
           ) : (
             <AccessDeniedView user={currentUser} requiredRole="DATABASE or ADMIN" />
           )
-        ) : (currentUser.role === 'ADMIN' || currentUser.role === 'DATABASE' || currentUser.role === 'EVENT_COORDINATOR') ? (
+        ) : (currentUser.role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'REGISTRATION') || userHasRole(currentUser, 'EVENT_COORDINATOR')) ? (
           /* Combined Participant Engine & Event Extractor View */
           <>
             {/* Upload & Database Bar (Admin Only) */}
@@ -621,23 +679,25 @@ export default function App() {
       <footer className="bg-white border-t border-slate-200 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            <span className="font-bold text-slate-700">AIROX '26 Symposium</span> — Central Registration Management System (RBAC Enabled)
+            <span className="font-bold text-slate-700">AIROX '26 Symposium</span> — Central Registration Management System (RBAC Enforced)
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setIsTestModalOpen(true)}
-              className="text-indigo-600 hover:underline font-semibold cursor-pointer"
-            >
-              Live Edge-Case & RBAC Tests
-            </button>
-            <span className="text-slate-300">|</span>
-            <button
-              onClick={() => setIsAliasModalOpen(true)}
-              className="text-slate-600 hover:underline cursor-pointer"
-            >
-              Alias Dictionary
-            </button>
-          </div>
+          {currentUser?.role === 'ADMIN' && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsTestModalOpen(true)}
+                className="text-indigo-600 hover:underline font-semibold cursor-pointer"
+              >
+                Live Edge-Case & RBAC Tests
+              </button>
+              <span className="text-slate-300">|</span>
+              <button
+                onClick={() => setIsAliasModalOpen(true)}
+                className="text-slate-600 hover:underline cursor-pointer"
+              >
+                Alias Dictionary
+              </button>
+            </div>
+          )}
         </div>
       </footer>
 
@@ -657,22 +717,42 @@ export default function App() {
         onStatusChange={handleStatusChange}
       />
 
-      <TestRunnerModal
-        isOpen={isTestModalOpen}
-        onClose={() => setIsTestModalOpen(false)}
-      />
+      {currentUser?.role === 'ADMIN' && (
+        <>
+          <TestRunnerModal
+            isOpen={isTestModalOpen}
+            onClose={() => setIsTestModalOpen(false)}
+          />
 
-      <AliasManagerModal
-        isOpen={isAliasModalOpen}
-        onClose={() => setIsAliasModalOpen(false)}
-        registry={registry}
-        onSaveRegistry={handleSaveRegistry}
-      />
+          <AliasManagerModal
+            isOpen={isAliasModalOpen}
+            onClose={() => setIsAliasModalOpen(false)}
+            registry={registry}
+            onSaveRegistry={handleSaveRegistry}
+          />
+        </>
+      )}
 
       <LoginModal
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}
-        onSuccess={user => setCurrentUser(user)}
+        onSuccess={(user, mustChange) => handleLoginSuccess(user, mustChange)}
+      />
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        user={currentUser}
+        isMandatoryFirstLogin={isMandatoryPasswordChange}
+        onClose={() => {
+          if (!isMandatoryPasswordChange) {
+            setIsChangePasswordOpen(false);
+          }
+        }}
+        onSuccess={updatedUser => {
+          setCurrentUser(updatedUser);
+          setIsMandatoryPasswordChange(false);
+          setIsChangePasswordOpen(false);
+        }}
       />
     </div>
   );

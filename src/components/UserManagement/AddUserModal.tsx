@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, UserPlus, Shield, Mail, User, Calendar, AlertCircle } from 'lucide-react';
+import { X, UserPlus, Shield, Mail, User, Calendar, AlertCircle, Lock, BookOpen, Layers } from 'lucide-react';
 import { UserRole, UserStatus } from '../../types';
 import { DEFAULT_EVENT_REGISTRY } from '../../config/defaultAliases';
 
@@ -8,10 +8,15 @@ interface AddUserModalProps {
   onClose: () => void;
   onSubmit: (userData: {
     name: string;
-    email: string;
+    username?: string;
+    email?: string;
     role: UserRole;
-    status: UserStatus;
-    assignedEvents: string[];
+    secondaryRoles?: UserRole[];
+    status?: UserStatus;
+    assignedEvents?: string[];
+    teamName?: string;
+    yearSection?: string;
+    password?: string;
   }) => Promise<void>;
   isSubmitting?: boolean;
 }
@@ -23,15 +28,21 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
   isSubmitting = false
 }) => {
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<UserRole>('EVENT_COORDINATOR');
+  const [secondaryRoles, setSecondaryRoles] = useState<UserRole[]>([]);
   const [status, setStatus] = useState<UserStatus>('ACTIVE');
   const [assignedEvents, setAssignedEvents] = useState<string[]>(['The Final Hire']);
+  const [teamName, setTeamName] = useState('');
+  const [yearSection, setYearSection] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const availableEvents = Object.values(DEFAULT_EVENT_REGISTRY).map(e => e.displayName);
+  const allRoles: UserRole[] = ['ADMIN', 'EVENT_COORDINATOR', 'ON_SPOT', 'DATABASE', 'CERTIFICATE', 'REGISTRATION'];
 
   const toggleEvent = (eventName: string) => {
     setAssignedEvents(prev =>
@@ -41,16 +52,25 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
     );
   };
 
+  const toggleSecondaryRole = (r: UserRole) => {
+    setSecondaryRoles(prev =>
+      prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]
+    );
+  };
+
+  const handleNameChange = (val: string) => {
+    setName(val);
+    if (!username || username === name.toLowerCase().replace(/[^a-z0-9]/g, '_')) {
+      setUsername(val.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, ''));
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
     if (!name.trim()) {
       setError('Please enter user full name.');
-      return;
-    }
-    if (!email.trim() || !email.includes('@')) {
-      setError('Please enter a valid Google account email address.');
       return;
     }
 
@@ -62,17 +82,27 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
     try {
       await onSubmit({
         name: name.trim(),
-        email: email.trim().toLowerCase(),
+        username: username.trim() || undefined,
+        email: email.trim().toLowerCase() || `${username || name.toLowerCase().replace(/[^a-z0-9]/g, '_')}@airox26.org`,
         role,
+        secondaryRoles: secondaryRoles.filter(r => r !== role),
         status,
-        assignedEvents: role === 'EVENT_COORDINATOR' ? assignedEvents : []
+        assignedEvents: (role === 'EVENT_COORDINATOR' || secondaryRoles.includes('EVENT_COORDINATOR')) ? assignedEvents : [],
+        teamName: teamName.trim() || undefined,
+        yearSection: yearSection.trim() || undefined,
+        password: password.trim() || undefined
       });
       onClose();
       // Reset
       setName('');
+      setUsername('');
       setEmail('');
       setRole('EVENT_COORDINATOR');
+      setSecondaryRoles([]);
       setAssignedEvents(['The Final Hire']);
+      setTeamName('');
+      setYearSection('');
+      setPassword('');
     } catch (err: any) {
       setError(err.message || 'Failed to authorize user');
     }
@@ -101,7 +131,7 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-3.5 max-h-[80vh] overflow-y-auto">
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -109,63 +139,151 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
             </div>
           )}
 
-          {/* Full Name */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Full Name <span className="text-rose-500">*</span>
-            </label>
-            <div className="relative">
-              <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          {/* Full Name & Username */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Full Name <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  required
+                  value={name}
+                  onChange={e => handleNameChange(e.target.value)}
+                  placeholder="e.g. Rahul Sharma"
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Username <span className="text-slate-400">(Unique ID)</span>
+              </label>
               <input
                 type="text"
-                required
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="e.g. Rahul Sharma"
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-900"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="e.g. rahul_sharma"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-mono"
               />
             </div>
           </div>
 
-          {/* Google Email */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Google Account Email <span className="text-rose-500">*</span>
-            </label>
-            <div className="relative">
-              <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          {/* Email & Team Name */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Email Address
+              </label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="e.g. rahul@airox26.org"
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Organizing Team / Committee
+              </label>
               <input
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="e.g. coordinator@example.com"
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-900"
+                type="text"
+                value={teamName}
+                onChange={e => setTeamName(e.target.value)}
+                placeholder="e.g. The Final Hire"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
               />
             </div>
-            <p className="text-[11px] text-slate-400 mt-1">
-              User will log in using this authenticated Google account.
-            </p>
           </div>
 
-          {/* Role Selection */}
+          {/* Year/Section & Initial Password */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Year / Department / Section
+              </label>
+              <input
+                type="text"
+                value={yearSection}
+                onChange={e => setYearSection(e.target.value)}
+                placeholder="e.g. III CSE A"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Initial Password <span className="text-slate-400">(Optional)</span>
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="Defaults to full name lowercase"
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-mono"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Primary Role Selection */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Symposium Role <span className="text-rose-500">*</span>
+              Primary Role <span className="text-rose-500">*</span>
             </label>
             <div className="relative">
               <Shield className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <select
                 value={role}
                 onChange={e => setRole(e.target.value as UserRole)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-900 bg-white font-medium"
+                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 bg-white font-medium"
               >
                 <option value="EVENT_COORDINATOR">EVENT COORDINATOR (Event-Scoped)</option>
-                <option value="ON_SPOT">ON_SPOT (Registration Desk Team)</option>
-                <option value="DATABASE">DATABASE (All Participants Team)</option>
-                <option value="CERTIFICATE">CERTIFICATE (Read-Only Cert Team)</option>
-                <option value="ADMIN">ADMIN (Full Unrestricted Access)</option>
+                <option value="ON_SPOT">ON_SPOT (On-Spot Registration Desk Team)</option>
+                <option value="REGISTRATION">REGISTRATION (Online Registration & Welcome)</option>
+                <option value="DATABASE">DATABASE (Database Team - All Participants)</option>
+                <option value="CERTIFICATE">CERTIFICATE (Certificate Writing Team)</option>
+                <option value="ADMIN">ADMIN (Full System Administrator)</option>
               </select>
+            </div>
+          </div>
+
+          {/* Secondary Roles (Dual assignments) */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Secondary Roles <span className="text-slate-400">(Optional multi-role access)</span>
+            </label>
+            <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border border-slate-200 rounded-xl">
+              {allRoles
+                .filter(r => r !== role)
+                .map(r => {
+                  const isChecked = secondaryRoles.includes(r);
+                  return (
+                    <button
+                      type="button"
+                      key={r}
+                      onClick={() => toggleSecondaryRole(r)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                        isChecked
+                          ? 'bg-teal-50 text-teal-800 border-teal-300'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {isChecked ? '✓ ' : '+ '}
+                      {r}
+                    </button>
+                  );
+                })}
             </div>
           </div>
 
@@ -202,8 +320,8 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
             </div>
           </div>
 
-          {/* Assigned Events (Only for EVENT_COORDINATOR) */}
-          {role === 'EVENT_COORDINATOR' && (
+          {/* Assigned Events */}
+          {(role === 'EVENT_COORDINATOR' || secondaryRoles.includes('EVENT_COORDINATOR')) && (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
@@ -220,7 +338,7 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
                       type="button"
                       key={ev}
                       onClick={() => toggleEvent(ev)}
-                      className={`text-left px-2 py-1.5 rounded text-[11px] font-medium transition-colors flex items-center justify-between ${
+                      className={`text-left px-2 py-1.5 rounded text-[11px] font-medium transition-colors flex items-center justify-between cursor-pointer ${
                         isSelected
                           ? 'bg-indigo-50 text-indigo-700 font-semibold border border-indigo-200'
                           : 'text-slate-600 hover:bg-slate-50 border border-transparent'
@@ -240,14 +358,14 @@ export const AddUserModal: React.FC<AddUserModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <UserPlus className="w-4 h-4" />
               <span>{isSubmitting ? 'Authorizing...' : 'Authorize User'}</span>

@@ -3,6 +3,8 @@ import { Play, CheckCircle2, XCircle, RefreshCw, X, ShieldAlert, Sparkles, Zap, 
 import { EventNormalizer } from '../utils/normalizer';
 import { TestCaseResult, AppUser } from '../types';
 import { processRawRows, detectColumnMapping } from '../utils/fileParser';
+import { combineDatasets } from '../utils/combinedEngine';
+import { SAMPLE_AIROX26_RAW_DATA } from '../data/sampleDataset';
 import {
   canAccessEvent,
   canCreateOffline,
@@ -83,41 +85,41 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
         : 'Variant mapping failed'
     });
 
-    // Test 2: Critical Non-Tech Verification - "AD SHOT" variants
-    const adShotVariants = ['AD SHOT', 'Ad Shot', 'ad shot', 'AD  SHOT', 'AD-SHOT', 'adshot'];
+    // Test 2: Critical Non-Tech Verification - "ADS SHOT" / "AD SHOT" variants
+    const adShotVariants = ['ADS SHOT', 'Ads Shot', 'AD SHOT', 'Ad Shot', 'ad shot', 'AD  SHOT', 'AD-SHOT', 'adshot', 'ADSHOT'];
     const adShotNorms = adShotVariants.map(v => normalizer.normalize(v));
-    const allAdShotSame = adShotNorms.every(n => n.canonicalKey === 'ad shot' && n.displayName === 'AD SHOT' && n.category === 'Non-Technical');
+    const allAdShotSame = adShotNorms.every(n => n.canonicalKey === 'ads shot' && n.displayName === 'ADS SHOT' && n.category === 'Non-Technical');
     testCases.push({
-      name: '2. Non-Technical Canonicalization: "AD SHOT"',
-      description: 'Verifies that "AD SHOT", "Ad Shot", "ad shot", and "AD  SHOT" resolve to canonical "AD SHOT" with Category = Non-Technical.',
+      name: '2. Non-Technical Canonicalization: "ADS SHOT"',
+      description: 'Verifies that "ADS SHOT", "Ads Shot", "AD SHOT", "Ad Shot", "ad shot", "ADSHOT", and "AD-SHOT" resolve to canonical "ADS SHOT" with Category = Non-Technical.',
       inputs: adShotVariants,
-      expectedCanonical: 'ad shot [AD SHOT] (Non-Technical)',
+      expectedCanonical: 'ads shot [ADS SHOT] (Non-Technical)',
       actualCanonical: Array.from(new Set(adShotNorms.map(n => `${n.canonicalKey} [${n.displayName}] (${n.category})`))).join(', '),
       passed: allAdShotSame,
       notes: allAdShotSame
-        ? 'Passed! All casing, spacing, and hyphenation variations canonicalized to AD SHOT.'
-        : 'AD SHOT variation normalization failed.'
+        ? 'Passed! All casing, spacing, and hyphenation variations canonicalized to ADS SHOT.'
+        : 'ADS SHOT variation normalization failed.'
     });
 
-    // Test 3: Critical Non-Tech Legacy Mapping - "AD BATTLE" -> "AD SHOT"
+    // Test 3: Critical Non-Tech Legacy Mapping - "AD BATTLE" -> "ADS SHOT"
     const adBattleNorm = normalizer.normalize('AD BATTLE');
     const adBattleLowerNorm = normalizer.normalize('ad battle');
     const adBattlePassed =
-      adBattleNorm.canonicalKey === 'ad shot' &&
-      adBattleNorm.displayName === 'AD SHOT' &&
+      adBattleNorm.canonicalKey === 'ads shot' &&
+      adBattleNorm.displayName === 'ADS SHOT' &&
       adBattleNorm.category === 'Non-Technical' &&
       adBattleNorm.aliasNote === 'Known legacy/incorrect event name' &&
-      adBattleLowerNorm.canonicalKey === 'ad shot';
+      adBattleLowerNorm.canonicalKey === 'ads shot';
     testCases.push({
-      name: '3. Legacy Alias Mapping: "AD BATTLE" → "AD SHOT"',
-      description: 'Ensures incorrect / legacy spreadsheet entry "AD BATTLE" correctly canonicalizes to official "AD SHOT" (Non-Technical).',
+      name: '3. Legacy Alias Mapping: "AD BATTLE" → "ADS SHOT"',
+      description: 'Ensures incorrect / legacy spreadsheet entry "AD BATTLE" correctly canonicalizes to official "ADS SHOT" (Non-Technical).',
       inputs: ['AD BATTLE', 'ad battle'],
-      expectedCanonical: 'ad shot [AD SHOT] (Non-Technical) + Legacy Alias Note',
+      expectedCanonical: 'ads shot [ADS SHOT] (Non-Technical) + Legacy Alias Note',
       actualCanonical: `${adBattleNorm.canonicalKey} [${adBattleNorm.displayName}] (${adBattleNorm.category}) - ${adBattleNorm.aliasNote || 'none'}`,
       passed: adBattlePassed,
       notes: adBattlePassed
-        ? 'Passed! "AD BATTLE" cleanly mapped to official "AD SHOT" with diagnostic note.'
-        : 'Failed to map AD BATTLE to AD SHOT.'
+        ? 'Passed! "AD BATTLE" cleanly mapped to official "ADS SHOT" with diagnostic note.'
+        : 'Failed to map AD BATTLE to ADS SHOT.'
     });
 
     // Test 4: Official Non-Tech - "GOATED OR GHOSTED"
@@ -383,6 +385,59 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
       notes: keysAreIndependent
         ? 'Passed! Event keys are independently scoped per participant registration.'
         : 'Failed: Event keys collided!'
+    });
+
+    // Test 16: Certificate Desk Online + Offline Combination & Cancelled Filtering
+    const sampleHeaders = Object.keys(SAMPLE_AIROX26_RAW_DATA[0] || {});
+    const sampleMapping = detectColumnMapping(sampleHeaders);
+    const { participants: sampleParticipants } = processRawRows(
+      SAMPLE_AIROX26_RAW_DATA,
+      sampleMapping,
+      normalizer
+    );
+    const sampleOnlineCount = sampleParticipants.filter(p => p.allEvents.includes('the final hire')).length;
+    const mockOfflineRecords: any[] = [
+      { offlineRegistrationId: 'OFF-AIROX26-101', fullName: 'Test Offline Active', event: 'The Final Hire', status: 'ACTIVE', verificationStatus: 'Verified' },
+      { offlineRegistrationId: 'OFF-AIROX26-102', fullName: 'Test Offline Cancelled', event: 'The Final Hire', status: 'CANCELLED', verificationStatus: 'Verified' }
+    ];
+    const combinedTest = combineDatasets({
+      onlineParticipants: sampleParticipants,
+      offlineRecords: mockOfflineRecords,
+      normalizer
+    });
+    const finalHireParticipants = combinedTest.combinedParticipants.filter(p => 
+      p.status !== 'CANCELLED' && p.allEvents.includes('the final hire')
+    );
+    const hasActiveOffline = finalHireParticipants.some(p => p.registrationId === 'OFF-AIROX26-101');
+    const excludesCancelledOffline = !finalHireParticipants.some(p => p.registrationId === 'OFF-AIROX26-102');
+    const combinedSyncPassed = hasActiveOffline && excludesCancelledOffline && finalHireParticipants.length === (sampleOnlineCount + 1);
+
+    testCases.push({
+      name: '16. Certificate Desk Roster Synchronization (Active Offline Included, Cancelled Excluded)',
+      description: 'Verifies that the Certificate Desk participant list includes active offline registrations and strictly excludes cancelled offline registrations.',
+      inputs: ['Online Roster', 'Active Offline: OFF-AIROX26-101', 'Cancelled Offline: OFF-AIROX26-102'],
+      expectedCanonical: `Total: ${sampleOnlineCount + 1} (Includes Active, Excludes Cancelled)`,
+      actualCanonical: `Total: ${finalHireParticipants.length} (Active: ${hasActiveOffline}, Cancelled Excluded: ${excludesCancelledOffline})`,
+      passed: combinedSyncPassed,
+      notes: combinedSyncPassed
+        ? 'Passed! Offline active participants are properly merged, and cancelled entries are excluded.'
+        : 'Failed: Combined roster did not correctly handle active/cancelled offline participants.'
+    });
+
+    // Test 17: ADS SHOT Canonical Normalization Consistency
+    const adsVariants = ['AD SHOT', 'Ad Shot', 'ADS SHOT', 'Ads Shot', 'AD  SHOT'];
+    const allNormalizedToAdsShot = adsVariants.every(v => normalizer.normalize(v).displayName === 'ADS SHOT');
+
+    testCases.push({
+      name: '17. ADS SHOT Canonical Normalization Consistency',
+      description: 'Verifies all AD SHOT / ADS SHOT variants map to the single canonical event name "ADS SHOT".',
+      inputs: adsVariants,
+      expectedCanonical: 'ADS SHOT across all variants',
+      actualCanonical: adsVariants.map(v => `${v} -> ${normalizer.normalize(v).displayName}`).join(' | '),
+      passed: allNormalizedToAdsShot,
+      notes: allNormalizedToAdsShot
+        ? 'Passed! All variants resolve to the uniform canonical display name ADS SHOT.'
+        : 'Failed: Some variant mapped to an inconsistent name.'
     });
 
     setResults(testCases);

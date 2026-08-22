@@ -185,16 +185,21 @@ export interface OfflineFilterState {
 // ==========================================
 // PHASE 3: AUTHENTICATION & RBAC TYPES
 // ==========================================
-export type UserRole = 'ADMIN' | 'EVENT_COORDINATOR' | 'ON_SPOT' | 'DATABASE' | 'CERTIFICATE';
+export type UserRole = 'ADMIN' | 'EVENT_COORDINATOR' | 'ON_SPOT' | 'REGISTRATION' | 'DATABASE' | 'CERTIFICATE';
 export type UserStatus = 'ACTIVE' | 'INACTIVE';
 
 export interface AppUser {
   id: string;
   name: string;
+  username?: string; // e.g. "mohanavelan_s"
   email: string;
   role: UserRole;
+  secondaryRoles?: UserRole[]; // for users in multiple teams
   status: UserStatus;
   assignedEvents: string[]; // List of canonical event display names, e.g. ["The Final Hire"]
+  teamName?: string;
+  yearSection?: string;
+  mustChangePassword?: boolean;
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;

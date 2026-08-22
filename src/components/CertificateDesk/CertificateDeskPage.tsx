@@ -41,7 +41,7 @@ const CANONICAL_EVENTS = [
   { name: 'Paper Presentation', category: 'Technical' },
   { name: 'The Prompt League', category: 'Technical' },
   { name: 'Zero Hour', category: 'Technical' },
-  { name: 'AD SHOT', category: 'Non-Technical' },
+  { name: 'ADS SHOT', category: 'Non-Technical' },
   { name: 'GOATED OR GHOSTED', category: 'Non-Technical' },
   { name: 'CLASH AND CONQUER', category: 'Non-Technical' },
   { name: 'BOX CRICKET', category: 'Non-Technical' },
@@ -77,7 +77,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
     return `${regId}__${getStrippedKey(eventName)}`;
   }, []);
 
-  // Fetch certificate records from server on mount
+  // Fetch certificate records from server on mount & refresh combined participant roster
   const loadCertificates = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -97,7 +97,10 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
 
   useEffect(() => {
     loadCertificates();
-  }, [loadCertificates]);
+    if (onRefreshData) {
+      onRefreshData();
+    }
+  }, [loadCertificates, onRefreshData]);
 
   // Handle Sync / Refresh
   const handleSync = async () => {
@@ -113,7 +116,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         map.set(key, rec);
       });
       setCertificateRecords(map);
-      setStatusMessage({ type: 'success', text: 'Certificate tracking and participant rosters refreshed.' });
+      setStatusMessage({ type: 'success', text: `Sync complete: Refreshed participant rosters and ${records.length} certificate records.` });
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Failed to refresh certificate data.' });
@@ -128,7 +131,10 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
     const targetKey = getStrippedKey(targetEvent);
     return p.allEvents.some(ev => {
       const evKey = getStrippedKey(ev);
-      return evKey === targetKey || evKey.includes(targetKey) || targetKey.includes(evKey);
+      if (evKey === targetKey) return true;
+      // Handle ads shot vs ad shot variants
+      if (evKey.replace(/s+/g, '') === targetKey.replace(/s+/g, '')) return true;
+      return false;
     });
   }, []);
 

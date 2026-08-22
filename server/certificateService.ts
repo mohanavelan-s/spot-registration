@@ -33,7 +33,7 @@ export const CERTIFICATE_SHEET_HEADERS = [
 ];
 
 export function normalizeEventKey(eventName: string): string {
-  return (eventName || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '-');
+  return (eventName || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '');
 }
 
 export class CertificateService {

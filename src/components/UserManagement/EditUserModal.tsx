@@ -9,9 +9,14 @@ interface EditUserModalProps {
   onClose: () => void;
   onSubmit: (id: string, updates: {
     name?: string;
+    username?: string;
+    email?: string;
     role?: UserRole;
+    secondaryRoles?: UserRole[];
     status?: UserStatus;
     assignedEvents?: string[];
+    teamName?: string;
+    yearSection?: string;
   }) => Promise<void>;
   isSubmitting?: boolean;
 }
@@ -24,17 +29,29 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
   isSubmitting = false
 }) => {
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [role, setRole] = useState<UserRole>('EVENT_COORDINATOR');
+  const [secondaryRoles, setSecondaryRoles] = useState<UserRole[]>([]);
   const [status, setStatus] = useState<UserStatus>('ACTIVE');
   const [assignedEvents, setAssignedEvents] = useState<string[]>([]);
+  const [teamName, setTeamName] = useState('');
+  const [yearSection, setYearSection] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  const allRoles: UserRole[] = ['ADMIN', 'EVENT_COORDINATOR', 'ON_SPOT', 'DATABASE', 'CERTIFICATE', 'REGISTRATION'];
 
   useEffect(() => {
     if (user) {
       setName(user.name || '');
+      setUsername(user.username || '');
+      setEmail(user.email || '');
       setRole(user.role);
+      setSecondaryRoles(user.secondaryRoles || []);
       setStatus(user.status);
       setAssignedEvents(user.assignedEvents || []);
+      setTeamName(user.teamName || '');
+      setYearSection(user.yearSection || '');
       setError(null);
     }
   }, [user]);
@@ -48,6 +65,12 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
       prev.includes(eventName)
         ? prev.filter(e => e !== eventName)
         : [...prev, eventName]
+    );
+  };
+
+  const toggleSecondaryRole = (r: UserRole) => {
+    setSecondaryRoles(prev =>
+      prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]
     );
   };
 
@@ -68,9 +91,14 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     try {
       await onSubmit(user.id, {
         name: name.trim(),
+        username: username.trim() || undefined,
+        email: email.trim() || undefined,
         role,
+        secondaryRoles: secondaryRoles.filter(r => r !== role),
         status,
-        assignedEvents: role === 'EVENT_COORDINATOR' ? assignedEvents : []
+        assignedEvents: (role === 'EVENT_COORDINATOR' || secondaryRoles.includes('EVENT_COORDINATOR')) ? assignedEvents : [],
+        teamName: teamName.trim() || undefined,
+        yearSection: yearSection.trim() || undefined
       });
       onClose();
     } catch (err: any) {
@@ -89,19 +117,19 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-900">Edit User Permissions</h2>
-              <p className="text-xs text-slate-500 font-mono">{user.email}</p>
+              <p className="text-xs text-slate-500 font-mono">@{user.username || user.email}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-colors"
+            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-3.5 max-h-[80vh] overflow-y-auto">
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -109,55 +137,120 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             </div>
           )}
 
-          {/* Full Name */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Full Name <span className="text-rose-500">*</span>
-            </label>
-            <div className="relative">
-              <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          {/* Full Name & Username */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Full Name <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  required
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Username</label>
               <input
                 type="text"
-                required
-                value={name}
-                onChange={e => setName(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-900"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-mono"
               />
             </div>
           </div>
 
-          {/* Email (Read-only) */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Google Email (Identity)</label>
-            <div className="relative">
-              <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          {/* Email & Team Name */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Email</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-mono"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Organizing Team</label>
               <input
-                type="email"
-                disabled
-                value={user.email}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-100 text-slate-500 font-mono"
+                type="text"
+                value={teamName}
+                onChange={e => setTeamName(e.target.value)}
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
               />
             </div>
           </div>
 
-          {/* Role Selection */}
+          {/* Year/Section */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Year / Section</label>
+            <input
+              type="text"
+              value={yearSection}
+              onChange={e => setYearSection(e.target.value)}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
+            />
+          </div>
+
+          {/* Primary Role Selection */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Symposium Role <span className="text-rose-500">*</span>
+              Primary Role <span className="text-rose-500">*</span>
             </label>
             <div className="relative">
               <Shield className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <select
                 value={role}
                 onChange={e => setRole(e.target.value as UserRole)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-900 bg-white font-medium"
+                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 bg-white font-medium"
               >
                 <option value="EVENT_COORDINATOR">EVENT COORDINATOR (Event-Scoped)</option>
                 <option value="ON_SPOT">ON_SPOT (Registration Desk Team)</option>
+                <option value="REGISTRATION">REGISTRATION (Online Registration & Welcome)</option>
                 <option value="DATABASE">DATABASE (All Participants Team)</option>
                 <option value="CERTIFICATE">CERTIFICATE (Read-Only Cert Team)</option>
                 <option value="ADMIN">ADMIN (Full Unrestricted Access)</option>
               </select>
+            </div>
+          </div>
+
+          {/* Secondary Roles */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Secondary Roles
+            </label>
+            <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border border-slate-200 rounded-xl">
+              {allRoles
+                .filter(r => r !== role)
+                .map(r => {
+                  const isChecked = secondaryRoles.includes(r);
+                  return (
+                    <button
+                      type="button"
+                      key={r}
+                      onClick={() => toggleSecondaryRole(r)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                        isChecked
+                          ? 'bg-teal-50 text-teal-800 border-teal-300'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {isChecked ? '✓ ' : '+ '}
+                      {r}
+                    </button>
+                  );
+                })}
             </div>
           </div>
 
@@ -194,8 +287,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             </div>
           </div>
 
-          {/* Assigned Events (Only for EVENT_COORDINATOR) */}
-          {role === 'EVENT_COORDINATOR' && (
+          {/* Assigned Events (Only for EVENT_COORDINATOR or when EVENT_COORDINATOR is a secondary role) */}
+          {(role === 'EVENT_COORDINATOR' || secondaryRoles.includes('EVENT_COORDINATOR')) && (
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
@@ -212,7 +305,7 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
                       type="button"
                       key={ev}
                       onClick={() => toggleEvent(ev)}
-                      className={`text-left px-2 py-1.5 rounded text-[11px] font-medium transition-colors flex items-center justify-between ${
+                      className={`text-left px-2 py-1.5 rounded text-[11px] font-medium transition-colors flex items-center justify-between cursor-pointer ${
                         isSelected
                           ? 'bg-indigo-50 text-indigo-700 font-semibold border border-indigo-200'
                           : 'text-slate-600 hover:bg-slate-50 border border-transparent'
@@ -232,14 +325,14 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <Save className="w-4 h-4" />
               <span>{isSubmitting ? 'Saving...' : 'Save Changes'}</span>
