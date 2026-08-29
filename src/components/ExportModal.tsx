@@ -8,6 +8,7 @@ import {
   exportToXLSX,
   generateExportFilename
 } from '../utils/exporter';
+import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   onlySelected: initialOnlySelected,
   selectedEventDisplayName
 }) => {
+  useBodyScrollLock(isOpen);
   const [format, setFormat] = useState<'xlsx' | 'csv'>('xlsx');
   const [exportScope, setExportScope] = useState<'all' | 'selected'>(
     initialOnlySelected && selectedParticipantIds.size > 0 ? 'selected' : 'all'

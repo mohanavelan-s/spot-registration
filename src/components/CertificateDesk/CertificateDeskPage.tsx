@@ -28,6 +28,8 @@ import {
   canModifyCertificateStatus
 } from '../../services/auth';
 import { getStrippedKey } from '../../utils/normalizer';
+import { CustomSelect } from '../ui/CustomSelect';
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock';
 import * as XLSX from 'xlsx';
 
 interface CertificateDeskPageProps {
@@ -53,10 +55,11 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
   currentUser,
   onRefreshData
 }) => {
-  const [selectedEvent, setSelectedEvent] = useState<string>('The Final Hire');
+  const [selectedEvent, setSelectedEvent] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'ISSUED'>('ALL');
   const [verificationFilter, setVerificationFilter] = useState<'ALL' | 'Verified' | 'Pending' | 'Rejected'>('ALL');
+  const [sourceFilter, setSourceFilter] = useState<'ALL' | 'ONLINE' | 'OFFLINE'>('ALL');
   const [exportFormat, setExportFormat] = useState<'xlsx' | 'csv'>('xlsx');
 
   // Certificate persistence state from server
@@ -70,6 +73,8 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
   const [isBulkModalOpen, setIsBulkModalOpen] = useState<boolean>(false);
   const [isProcessingBulk, setIsProcessingBulk] = useState<boolean>(false);
 
+  useBodyScrollLock(isBulkModalOpen);
+
   const canModify = canModifyCertificateStatus(currentUser);
 
   // Helper to construct unique lookup key
@@ -77,40 +82,62 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
     return `${regId}__${getStrippedKey(eventName)}`;
   }, []);
 
-  // Fetch certificate records from server on mount & refresh combined participant roster
+  // Helper to get certificate status for a participant in the current context
+  const getParticipantCertStatus = useCallback((p: Participant, targetEvent: string): { status: CertificateStatus; record?: CertificateRecord } => {
+    if (targetEvent !== 'All' && targetEvent !== 'ALL') {
+      const certKey = getCertKey(p.registrationId, targetEvent);
+      const rec = certificateRecords.get(certKey);
+      return { status: rec?.status || 'PENDING', record: rec };
+    }
+
+    // In 'All' view: check if an explicit 'All' record exists or if any registered event is ISSUED
+    const allKey = getCertKey(p.registrationId, 'All');
+    const allRec = certificateRecords.get(allKey);
+    if (allRec && allRec.status === 'ISSUED') {
+      return { status: 'ISSUED', record: allRec };
+    }
+
+    for (const ev of p.allEvents || []) {
+      const key = getCertKey(p.registrationId, ev);
+      const rec = certificateRecords.get(key);
+      if (rec && rec.status === 'ISSUED') {
+        return { status: 'ISSUED', record: rec };
+      }
+    }
+
+    // Check if any record in certificateRecords for this registrationId is ISSUED
+    for (const rec of certificateRecords.values()) {
+      if (rec.registrationId === p.registrationId && rec.status === 'ISSUED') {
+        return { status: 'ISSUED', record: rec };
+      }
+    }
+
+    return { status: 'PENDING', record: allRec };
+  }, [certificateRecords, getCertKey]);
+
+  // Fetch certificate records from server on mount
   const loadCertificates = useCallback(async () => {
     try {
       setIsLoading(true);
       const records = await fetchCertificateRecords();
       const map = new Map<string, CertificateRecord>();
-      records.forEach((rec: CertificateRecord) => {
-        const key = getCertKey(rec.registrationId, rec.event);
-        map.set(key, rec);
-      });
+      if (Array.isArray(records)) {
+        records.forEach((rec: CertificateRecord) => {
+          const key = getCertKey(rec.registrationId, rec.event);
+          map.set(key, rec);
+        });
+      }
       setCertificateRecords(map);
     } catch (err: any) {
-      console.error('[CertificateDesk] Error loading certificate records:', err);
+      console.warn('[CertificateDesk] Note on loading certificates:', err.message || err);
     } finally {
       setIsLoading(false);
     }
   }, [getCertKey]);
 
-  // 2-minute automatic refresh interval
   useEffect(() => {
     loadCertificates();
-    if (onRefreshData) {
-      onRefreshData();
-    }
-
-    const intervalId = setInterval(() => {
-      loadCertificates();
-      if (onRefreshData) {
-        onRefreshData();
-      }
-    }, 120000); // 2 minutes (120,000 ms)
-
-    return () => clearInterval(intervalId);
-  }, [loadCertificates, onRefreshData]);
+  }, [loadCertificates, currentUser]);
 
   // Handle Sync / Refresh
   const handleSync = async () => {
@@ -126,7 +153,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         map.set(key, rec);
       });
       setCertificateRecords(map);
-      setStatusMessage({ type: 'success', text: `Sync complete: Refreshed participant rosters and ${records.length} certificate records.` });
+      setStatusMessage({ type: 'success', text: 'Certificate tracking and participant rosters refreshed.' });
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Failed to refresh certificate data.' });
@@ -137,14 +164,11 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
 
   // Helper to check if participant matches the selected canonical event
   const isParticipantInEvent = useCallback((p: Participant, targetEvent: string): boolean => {
-    if (targetEvent === 'ALL') return true;
+    if (targetEvent === 'ALL' || targetEvent === 'All' || targetEvent === 'All Events') return true;
     const targetKey = getStrippedKey(targetEvent);
     return p.allEvents.some(ev => {
       const evKey = getStrippedKey(ev);
-      if (evKey === targetKey) return true;
-      // Handle ads shot vs ad shot variants
-      if (evKey.replace(/s+/g, '') === targetKey.replace(/s+/g, '')) return true;
-      return false;
+      return evKey === targetKey || evKey.includes(targetKey) || targetKey.includes(evKey);
     });
   }, []);
 
@@ -156,7 +180,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
     });
   }, [participants, selectedEvent, isParticipantInEvent]);
 
-  // Filtered participants based on search, status filter, verification filter
+  // Filtered participants based on search, status filter, verification filter, source filter
   const filteredParticipants = useMemo(() => {
     return eventParticipants.filter(p => {
       // 1. Search Query
@@ -164,10 +188,12 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         const q = searchQuery.toLowerCase().trim();
         const matchesName = p.fullName.toLowerCase().includes(q);
         const matchesId = p.registrationId.toLowerCase().includes(q);
-        const matchesCollege = p.college.toLowerCase().includes(q);
+        const matchesCollege = (p.college || '').toLowerCase().includes(q);
+        const matchesDepartment = (p.department || '').toLowerCase().includes(q);
         const matchesMobile = (p.mobile || '').includes(q);
         const matchesEmail = (p.email || '').toLowerCase().includes(q);
-        if (!matchesName && !matchesId && !matchesCollege && !matchesMobile && !matchesEmail) {
+        const matchesEvents = (p.allEvents || []).some(ev => ev.toLowerCase().includes(q));
+        if (!matchesName && !matchesId && !matchesCollege && !matchesDepartment && !matchesMobile && !matchesEmail && !matchesEvents) {
           return false;
         }
       }
@@ -178,17 +204,21 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         if (pVerif !== verificationFilter) return false;
       }
 
-      // 3. Certificate status filter
+      // 3. Source Filter
+      if (sourceFilter !== 'ALL') {
+        const pSource = p.source || 'ONLINE';
+        if (pSource !== sourceFilter) return false;
+      }
+
+      // 4. Certificate status filter
       if (statusFilter !== 'ALL') {
-        const certKey = getCertKey(p.registrationId, selectedEvent);
-        const certRecord = certificateRecords.get(certKey);
-        const currentStatus: CertificateStatus = certRecord ? certRecord.status : 'PENDING';
+        const { status: currentStatus } = getParticipantCertStatus(p, selectedEvent);
         if (currentStatus !== statusFilter) return false;
       }
 
       return true;
     });
-  }, [eventParticipants, searchQuery, verificationFilter, statusFilter, selectedEvent, certificateRecords, getCertKey]);
+  }, [eventParticipants, searchQuery, verificationFilter, sourceFilter, statusFilter, selectedEvent, getParticipantCertStatus]);
 
   // Dashboard Metrics for Selected Event
   const metrics = useMemo(() => {
@@ -198,9 +228,8 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
 
     let issuedCount = 0;
     eligibleList.forEach(p => {
-      const certKey = getCertKey(p.registrationId, selectedEvent);
-      const rec = certificateRecords.get(certKey);
-      if (rec && rec.status === 'ISSUED') {
+      const { status } = getParticipantCertStatus(p, selectedEvent);
+      if (status === 'ISSUED') {
         issuedCount++;
       }
     });
@@ -214,7 +243,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
       pendingCount,
       progressPercent
     };
-  }, [eventParticipants, selectedEvent, certificateRecords, getCertKey]);
+  }, [eventParticipants, selectedEvent, getParticipantCertStatus]);
 
   // Toggle single certificate status
   const handleToggleStatus = async (p: Participant) => {
@@ -229,46 +258,75 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
       return;
     }
 
+    const { status: currentStatus } = getParticipantCertStatus(p, selectedEvent);
+    const newStatus: CertificateStatus = currentStatus === 'ISSUED' ? 'PENDING' : 'ISSUED';
+    const effectiveEvent = (selectedEvent === 'All' || selectedEvent === 'ALL')
+      ? (p.allEvents && p.allEvents.length > 0 ? p.allEvents[0] : 'All Events')
+      : selectedEvent;
+
     const certKey = getCertKey(p.registrationId, selectedEvent);
-    const currentRec = certificateRecords.get(certKey);
-    const newStatus: CertificateStatus = currentRec?.status === 'ISSUED' ? 'PENDING' : 'ISSUED';
+    const effectiveKey = getCertKey(p.registrationId, effectiveEvent);
+
+    const now = new Date().toISOString();
+    const actor = currentUser?.name || currentUser?.email || 'Certificate Team';
 
     // Optimistic update
     const optimisticRec: CertificateRecord = {
-      id: certKey,
+      id: effectiveKey,
       registrationId: p.registrationId,
-      event: selectedEvent,
-      eventKey: getStrippedKey(selectedEvent),
+      event: effectiveEvent,
+      eventKey: getStrippedKey(effectiveEvent),
       participantName: p.fullName,
       college: p.college,
       status: newStatus,
-      issuedAt: newStatus === 'ISSUED' ? new Date().toISOString() : undefined,
-      issuedBy: newStatus === 'ISSUED' ? (currentUser?.name || currentUser?.email || 'Certificate Team') : undefined,
-      updatedAt: new Date().toISOString(),
-      updatedBy: currentUser?.name || currentUser?.email || 'Certificate Team'
+      issuedAt: newStatus === 'ISSUED' ? now : undefined,
+      issuedBy: newStatus === 'ISSUED' ? actor : undefined,
+      updatedAt: now,
+      updatedBy: actor
     };
 
     setCertificateRecords(prev => {
       const next = new Map(prev);
-      next.set(certKey, optimisticRec);
+      next.set(effectiveKey, optimisticRec);
+      if (selectedEvent === 'All' || selectedEvent === 'ALL') {
+        next.set(certKey, optimisticRec);
+        (p.allEvents || []).forEach(ev => {
+          next.set(getCertKey(p.registrationId, ev), {
+            ...optimisticRec,
+            id: getCertKey(p.registrationId, ev),
+            event: ev,
+            eventKey: getStrippedKey(ev)
+          });
+        });
+      }
       return next;
     });
 
     try {
       const savedRec = await updateCertificateStatusApi(
         p.registrationId,
-        selectedEvent,
+        effectiveEvent,
         newStatus,
         p.fullName,
         p.college
       );
       setCertificateRecords(prev => {
         const next = new Map(prev);
-        next.set(certKey, savedRec);
+        next.set(effectiveKey, savedRec);
+        if (selectedEvent === 'All' || selectedEvent === 'ALL') {
+          next.set(certKey, savedRec);
+          (p.allEvents || []).forEach(ev => {
+            next.set(getCertKey(p.registrationId, ev), {
+              ...savedRec,
+              id: getCertKey(p.registrationId, ev),
+              event: ev,
+              eventKey: getStrippedKey(ev)
+            });
+          });
+        }
         return next;
       });
     } catch (err: any) {
-      // Revert on failure
       loadCertificates();
       setStatusMessage({ type: 'error', text: err.message || 'Failed to update certificate status.' });
     }
@@ -301,9 +359,8 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
     const pendingSet = new Set<string>();
     eventParticipants.forEach(p => {
       if (p.verificationStatus === 'Rejected') return;
-      const certKey = getCertKey(p.registrationId, selectedEvent);
-      const rec = certificateRecords.get(certKey);
-      if (!rec || rec.status !== 'ISSUED') {
+      const { status } = getParticipantCertStatus(p, selectedEvent);
+      if (status !== 'ISSUED') {
         pendingSet.add(p.registrationId);
       }
     });
@@ -323,9 +380,12 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         college?: string;
       }> = Array.from(selectedRegIds).map((regId: string) => {
         const p = participants.find(item => item.registrationId === regId);
+        const effectiveEvent = (selectedEvent === 'All' || selectedEvent === 'ALL')
+          ? (p?.allEvents && p.allEvents.length > 0 ? p.allEvents[0] : 'All Events')
+          : selectedEvent;
         return {
           registrationId: String(regId),
-          event: String(selectedEvent),
+          event: String(effectiveEvent),
           status: 'ISSUED' as CertificateStatus,
           participantName: p?.fullName || 'Participant',
           college: p?.college
@@ -338,6 +398,9 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         updatedRecords.forEach((rec: CertificateRecord) => {
           const key = getCertKey(rec.registrationId, rec.event);
           next.set(key, rec);
+          if (selectedEvent === 'All' || selectedEvent === 'ALL') {
+            next.set(getCertKey(rec.registrationId, 'All'), rec);
+          }
         });
         return next;
       });
@@ -346,7 +409,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
       setIsBulkModalOpen(false);
       setStatusMessage({
         type: 'success',
-        text: `Successfully marked ${updatedRecords.length} certificates as ISSUED for ${selectedEvent}.`
+        text: `Successfully marked ${updatedRecords.length} certificates as ISSUED for ${selectedEvent === 'All' ? 'all participants' : selectedEvent}.`
       });
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err: any) {
@@ -360,17 +423,14 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
   const handleExportCertificates = (scope: 'ALL' | 'ISSUED' | 'PENDING') => {
     const rowsToExport = eventParticipants.filter(p => {
       if (p.verificationStatus === 'Rejected' && scope !== 'ALL') return false;
-      const certKey = getCertKey(p.registrationId, selectedEvent);
-      const rec = certificateRecords.get(certKey);
-      const currentStatus: CertificateStatus = rec?.status || 'PENDING';
+      const { status: currentStatus } = getParticipantCertStatus(p, selectedEvent);
       if (scope === 'ISSUED') return currentStatus === 'ISSUED';
       if (scope === 'PENDING') return currentStatus === 'PENDING';
       return true;
     });
 
     const exportRows = rowsToExport.map((p, index) => {
-      const certKey = getCertKey(p.registrationId, selectedEvent);
-      const rec = certificateRecords.get(certKey);
+      const { status, record } = getParticipantCertStatus(p, selectedEvent);
       return {
         'S.No': index + 1,
         'Registration ID': p.registrationId,
@@ -379,12 +439,13 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         'Department': p.department || 'N/A',
         'Mobile': p.mobile || 'N/A',
         'Email': p.email || 'N/A',
-        'Canonical Event': selectedEvent,
+        'Registered Events': (p.allEvents || []).join(', '),
+        'Selected Event Context': selectedEvent,
         'Registration Source': p.source || 'ONLINE',
         'Verification Status': p.verificationStatus || 'Verified',
-        'Certificate Status': rec?.status || 'PENDING',
-        'Certificate Issued At': rec?.issuedAt ? new Date(rec.issuedAt).toLocaleString() : 'N/A',
-        'Issued By User': rec?.issuedBy || 'N/A'
+        'Certificate Status': status,
+        'Certificate Issued At': record?.issuedAt ? new Date(record.issuedAt).toLocaleString() : 'N/A',
+        'Issued By User': record?.issuedBy || 'N/A'
       };
     });
 
@@ -426,7 +487,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Track certificate issuance for registered participants • Syncs to server-side Google Sheets tracking
+              Track and issue certificates for all participants across events • Syncs with Google Sheets tracking
             </p>
           </div>
         </div>
@@ -471,7 +532,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
               onClick={() => handleExportCertificates('ISSUED')}
               disabled={metrics.issuedCount === 0}
               className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
-              title="Export only issued certificates for selected event"
+              title="Export only issued certificates"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Export Issued ({metrics.issuedCount})</span>
@@ -482,7 +543,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
               onClick={() => handleExportCertificates('ALL')}
               disabled={eventParticipants.length === 0}
               className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              title="Export all certificate records for selected event"
+              title="Export all certificate records in current event/all filter"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Export All ({eventParticipants.length})</span>
@@ -509,22 +570,47 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
         </div>
       )}
 
-      {/* 2. Canonical Event Selector Grid */}
+      {/* 2. Canonical Event Selector Grid with "All" Filter */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-            Official AIROX'26 Events ({CANONICAL_EVENTS.length})
+            Event Filter / Selection ({CANONICAL_EVENTS.length + 1} options)
           </span>
           <span className="text-xs text-slate-500">
-            Selected: <strong className="text-amber-700 font-bold">{selectedEvent}</strong>
+            Selected Filter: <strong className="text-amber-700 font-bold">{selectedEvent === 'All' ? 'All (Every Participant)' : selectedEvent}</strong>
           </span>
         </div>
 
         <div className="flex flex-wrap gap-2">
+          {/* "All" Filter Button */}
+          <button
+            id="btn-event-all"
+            onClick={() => {
+              setSelectedEvent('All');
+              setSelectedRegIds(new Set());
+            }}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 border cursor-pointer ${
+              selectedEvent === 'All'
+                ? 'bg-amber-600 text-white border-amber-600 shadow-sm ring-2 ring-amber-500/20'
+                : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300'
+            }`}
+            title="Show all participants across all events"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>All</span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                selectedEvent === 'All' ? 'bg-amber-700 text-amber-100' : 'bg-slate-100 text-slate-600'
+              }`}
+            >
+              {participants.filter(p => p.status !== 'CANCELLED').length}
+            </span>
+          </button>
+
+          {/* Canonical Events List */}
           {CANONICAL_EVENTS.map(ev => {
             const isSelected = selectedEvent === ev.name;
-            // Calculate active participant count for this event
-            const count = participants.filter(p => p.status !== 'ACTIVE' ? false : isParticipantInEvent(p, ev.name)).length;
+            const count = participants.filter(p => p.status === 'CANCELLED' ? false : isParticipantInEvent(p, ev.name)).length;
 
             return (
               <button
@@ -556,15 +642,15 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
 
       {/* 3. Event Dashboard Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Selected Event */}
+        {/* Card 1: Selected Event / Filter */}
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Active Event</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Active View</p>
             <h3 className="text-base font-bold text-slate-900 mt-0.5 truncate max-w-[180px]" title={selectedEvent}>
-              {selectedEvent}
+              {selectedEvent === 'All' ? 'All Participants' : selectedEvent}
             </h3>
             <p className="text-[10px] text-amber-700 font-semibold mt-0.5">
-              {CANONICAL_EVENTS.find(e => e.name === selectedEvent)?.category || 'Technical'} Track
+              {selectedEvent === 'All' ? 'Symposium Wide' : `${CANONICAL_EVENTS.find(e => e.name === selectedEvent)?.category || 'Technical'} Track`}
             </p>
           </div>
           <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-700 shrink-0">
@@ -633,7 +719,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
             <input
               id="input-cert-search"
               type="text"
-              placeholder="Search by ID, Name, College, or Mobile..."
+              placeholder="Search by ID, Name, College, Department, or Mobile..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full pl-9.5 pr-4 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500 text-slate-900 bg-slate-50/50"
@@ -670,17 +756,36 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
               </button>
             </div>
 
+            {/* Registration Source Filter */}
+            <div className="w-36">
+              <CustomSelect
+                id="select-cert-source"
+                value={sourceFilter}
+                onChange={val => setSourceFilter(val as any)}
+                size="sm"
+                options={[
+                  { value: 'ALL', label: 'All Sources' },
+                  { value: 'ONLINE', label: 'Online Portal' },
+                  { value: 'OFFLINE', label: 'Offline (On-Spot)' }
+                ]}
+              />
+            </div>
+
             {/* Verification Filter */}
-            <select
-              value={verificationFilter}
-              onChange={e => setVerificationFilter(e.target.value as any)}
-              className="text-xs py-2 px-3 rounded-xl border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
-            >
-              <option value="ALL">All Verification</option>
-              <option value="Verified">Verified Only</option>
-              <option value="Pending">Pending Verification</option>
-              <option value="Rejected">Rejected</option>
-            </select>
+            <div className="w-40">
+              <CustomSelect
+                id="select-cert-verification"
+                value={verificationFilter}
+                onChange={val => setVerificationFilter(val as any)}
+                size="sm"
+                options={[
+                  { value: 'ALL', label: 'All Verification' },
+                  { value: 'Verified', label: 'Verified Only' },
+                  { value: 'Pending', label: 'Pending Verification' },
+                  { value: 'Rejected', label: 'Rejected' }
+                ]}
+              />
+            </div>
           </div>
         </div>
 
@@ -754,19 +859,20 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
                   />
                 </th>
                 <th className="py-3.5 px-4">Reg ID</th>
-                <th className="py-3.5 px-4">Participant Name (for Certificate)</th>
+                <th className="py-3.5 px-4">Participant Name</th>
+                <th className="py-3.5 px-4">Registered Events</th>
                 <th className="py-3.5 px-4">Institution / College</th>
                 <th className="py-3.5 px-4">Contact</th>
                 <th className="py-3.5 px-4">Source</th>
                 <th className="py-3.5 px-4">Verification</th>
                 <th className="py-3.5 px-4">Certificate Status</th>
-                <th className="py-3.5 px-4 text-center">Action / Issue Toggle</th>
+                <th className="py-3.5 px-4 text-center">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-sans">
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
+                  <td colSpan={10} className="py-12 text-center text-slate-400">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <RefreshCw className="w-5 h-5 text-amber-600 animate-spin" />
                       <span>Loading certificate records...</span>
@@ -775,15 +881,14 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
                 </tr>
               ) : filteredParticipants.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    No participants found matching the selected event and filters.
+                  <td colSpan={10} className="py-12 text-center text-slate-400">
+                    No participants found matching the selected filters.
                   </td>
                 </tr>
               ) : (
                 filteredParticipants.map(p => {
-                  const certKey = getCertKey(p.registrationId, selectedEvent);
-                  const certRecord = certificateRecords.get(certKey);
-                  const isIssued = certRecord?.status === 'ISSUED';
+                  const { status: certStatus, record: certRecord } = getParticipantCertStatus(p, selectedEvent);
+                  const isIssued = certStatus === 'ISSUED';
                   const isRejected = p.verificationStatus === 'Rejected';
                   const isSelected = selectedRegIds.has(p.registrationId);
 
@@ -820,9 +925,30 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
                         )}
                       </td>
 
+                      {/* Registered Events */}
+                      <td className="py-3 px-4 max-w-[220px]">
+                        <div className="flex flex-wrap gap-1">
+                          {(p.allEvents || []).map((ev, idx) => (
+                            <span
+                              key={idx}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                                selectedEvent !== 'All' && ev.toLowerCase().includes(selectedEvent.toLowerCase())
+                                  ? 'bg-amber-50 text-amber-800 border-amber-300 font-bold'
+                                  : 'bg-slate-100 text-slate-700 border-slate-200'
+                              }`}
+                            >
+                              {ev}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+
                       {/* College */}
-                      <td className="py-3 px-4 text-slate-600 max-w-[200px] truncate" title={p.college}>
-                        {p.college || 'N/A'}
+                      <td className="py-3 px-4 text-slate-600 max-w-[180px] truncate" title={p.college}>
+                        <div className="font-medium text-slate-800 truncate">{p.college || 'N/A'}</div>
+                        {p.department && (
+                          <div className="text-[10px] text-slate-400 truncate">{p.department}</div>
+                        )}
                       </td>
 
                       {/* Contact */}
@@ -949,7 +1075,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
                   Bulk Issue Certificates
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Event: <strong className="text-slate-800">{selectedEvent}</strong>
+                  Target: <strong className="text-slate-800">{selectedEvent === 'All' ? 'All Participants' : selectedEvent}</strong>
                 </p>
               </div>
             </div>
@@ -957,7 +1083,7 @@ export const CertificateDeskPage: React.FC<CertificateDeskPageProps> = ({
             <p className="text-xs text-slate-600 leading-relaxed">
               Are you sure you want to mark certificates as <strong>ISSUED</strong> for{' '}
               <strong className="text-emerald-700 font-bold">{selectedRegIds.size} participants</strong> in{' '}
-              <strong>{selectedEvent}</strong>?
+              <strong>{selectedEvent === 'All' ? 'All Events' : selectedEvent}</strong>?
             </p>
 
             <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 text-[11px] space-y-1">

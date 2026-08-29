@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { OfflineRegistrationRecord, OfflineFilterState } from '../../types';
 import { defaultNormalizer } from '../../utils/normalizer';
+import { CustomSelect, CustomSelectGroup } from '../ui/CustomSelect';
 import * as XLSX from 'xlsx';
 
 interface OfflineTableProps {
@@ -256,45 +257,45 @@ export const OfflineTable: React.FC<OfflineTableProps> = ({
 
           {/* Event Filter */}
           <div className="sm:col-span-3">
-            <select
+            <CustomSelect
+              id="select-offline-event-filter"
               value={filterState.eventFilter}
-              onChange={e => setFilterState(p => ({ ...p, eventFilter: e.target.value, page: 1 }))}
-              className="w-full px-3 py-2 rounded-xl text-xs border border-slate-300 bg-slate-50/50 font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-            >
-              <option value="ALL">All Events (Filter)</option>
-              <optgroup label="Technical Events">
-                {canonicalEvents
-                  .filter(e => e.category === 'Technical' || e.category === 'Both')
-                  .map(e => (
-                    <option key={e.key} value={e.displayName}>
-                      {e.displayName}
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label="Non-Technical Events">
-                {canonicalEvents
-                  .filter(e => e.category === 'Non-Technical')
-                  .map(e => (
-                    <option key={e.key} value={e.displayName}>
-                      {e.displayName}
-                    </option>
-                  ))}
-              </optgroup>
-            </select>
+              onChange={val => setFilterState(p => ({ ...p, eventFilter: val, page: 1 }))}
+              placeholder="All Events (Filter)"
+              groups={[
+                {
+                  label: 'General',
+                  options: [{ value: 'ALL', label: 'All Events (Filter)' }]
+                },
+                {
+                  label: 'Technical Events',
+                  options: canonicalEvents
+                    .filter(e => e.category === 'Technical' || e.category === 'Both')
+                    .map(e => ({ value: e.displayName, label: e.displayName }))
+                },
+                {
+                  label: 'Non-Technical Events',
+                  options: canonicalEvents
+                    .filter(e => e.category === 'Non-Technical')
+                    .map(e => ({ value: e.displayName, label: e.displayName }))
+                }
+              ]}
+            />
           </div>
 
           {/* Verification Status Filter */}
           <div className="sm:col-span-3">
-            <select
+            <CustomSelect
+              id="select-offline-verification-filter"
               value={filterState.verificationFilter}
-              onChange={e => setFilterState(p => ({ ...p, verificationFilter: e.target.value as any, page: 1 }))}
-              className="w-full px-3 py-2 rounded-xl text-xs border border-slate-300 bg-slate-50/50 font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-            >
-              <option value="ALL">All Verification Status</option>
-              <option value="Verified">Verified Only</option>
-              <option value="Pending">Pending Only</option>
-              <option value="Rejected">Rejected Only</option>
-            </select>
+              onChange={val => setFilterState(p => ({ ...p, verificationFilter: val as any, page: 1 }))}
+              options={[
+                { value: 'ALL', label: 'All Verification Status' },
+                { value: 'Verified', label: 'Verified Only' },
+                { value: 'Pending', label: 'Pending Only' },
+                { value: 'Rejected', label: 'Rejected Only' }
+              ]}
+            />
           </div>
         </div>
       </div>

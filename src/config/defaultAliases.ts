@@ -84,14 +84,13 @@ export const DEFAULT_EVENT_REGISTRY: EventAliasMap = {
     category: 'Non-Technical',
     aliases: [
       'ads shot',
-      'ad shot',
-      'ads-shot',
-      'ad-shot',
-      'adshot',
       'adsshot',
+      'ads-shot',
       'ads  shot',
+      'ad shot',
+      'adshot',
+      'ad-shot',
       'ad  shot',
-      'ads   shot',
       'ad   shot',
       'ad battle',       // Explicit known legacy / data-entry mistake for AIROX'26
       'adbattle',
@@ -102,7 +101,6 @@ export const DEFAULT_EVENT_REGISTRY: EventAliasMap = {
       'ad-zap',
       'advertisement zap',
       'ad shoot',
-      'ads shoot',
       'ad photography'
     ]
   },

@@ -1,22 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, Shield, Mail, User, Calendar, AlertCircle } from 'lucide-react';
-import { AppUser, UserRole, UserStatus } from '../../types';
+import { X, Save, Shield, Mail, User, Lock, AlertCircle } from 'lucide-react';
+import { AppUser, UserRole, UserStatus, EventAliasMap, EventConfig } from '../../types';
 import { DEFAULT_EVENT_REGISTRY } from '../../config/defaultAliases';
+import { CustomSelect } from '../ui/CustomSelect';
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock';
 
 interface EditUserModalProps {
   isOpen: boolean;
   user: AppUser | null;
+  registry?: EventAliasMap;
   onClose: () => void;
   onSubmit: (id: string, updates: {
     name?: string;
-    username?: string;
-    email?: string;
     role?: UserRole;
-    secondaryRoles?: UserRole[];
+    additionalRoles?: UserRole[];
     status?: UserStatus;
     assignedEvents?: string[];
-    teamName?: string;
-    yearSection?: string;
   }) => Promise<void>;
   isSubmitting?: boolean;
 }
@@ -24,41 +23,36 @@ interface EditUserModalProps {
 export const EditUserModal: React.FC<EditUserModalProps> = ({
   isOpen,
   user,
+  registry,
   onClose,
   onSubmit,
   isSubmitting = false
 }) => {
+  useBodyScrollLock(isOpen && Boolean(user));
+  const activeRegistry = registry || DEFAULT_EVENT_REGISTRY;
+  const configList = Object.values(activeRegistry) as EventConfig[];
   const [name, setName] = useState('');
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
   const [role, setRole] = useState<UserRole>('EVENT_COORDINATOR');
-  const [secondaryRoles, setSecondaryRoles] = useState<UserRole[]>([]);
+  const [additionalRoles, setAdditionalRoles] = useState<UserRole[]>([]);
   const [status, setStatus] = useState<UserStatus>('ACTIVE');
   const [assignedEvents, setAssignedEvents] = useState<string[]>([]);
-  const [teamName, setTeamName] = useState('');
-  const [yearSection, setYearSection] = useState('');
   const [error, setError] = useState<string | null>(null);
-
-  const allRoles: UserRole[] = ['ADMIN', 'EVENT_COORDINATOR', 'ON_SPOT', 'DATABASE', 'CERTIFICATE', 'REGISTRATION'];
 
   useEffect(() => {
     if (user) {
       setName(user.name || '');
-      setUsername(user.username || '');
-      setEmail(user.email || '');
       setRole(user.role);
-      setSecondaryRoles(user.secondaryRoles || []);
+      setAdditionalRoles(user.additionalRoles || []);
       setStatus(user.status);
       setAssignedEvents(user.assignedEvents || []);
-      setTeamName(user.teamName || '');
-      setYearSection(user.yearSection || '');
       setError(null);
     }
   }, [user]);
 
   if (!isOpen || !user) return null;
 
-  const availableEvents = Object.values(DEFAULT_EVENT_REGISTRY).map(e => e.displayName);
+  const availableEvents = configList.map(e => e.displayName);
+  const possibleAdditionalRoles: UserRole[] = ['CERTIFICATE', 'REGISTRATION', 'ON_SPOT', 'DATABASE'];
 
   const toggleEvent = (eventName: string) => {
     setAssignedEvents(prev =>
@@ -68,8 +62,8 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     );
   };
 
-  const toggleSecondaryRole = (r: UserRole) => {
-    setSecondaryRoles(prev =>
+  const toggleAdditionalRole = (r: UserRole) => {
+    setAdditionalRoles(prev =>
       prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]
     );
   };
@@ -91,14 +85,10 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
     try {
       await onSubmit(user.id, {
         name: name.trim(),
-        username: username.trim() || undefined,
-        email: email.trim() || undefined,
         role,
-        secondaryRoles: secondaryRoles.filter(r => r !== role),
+        additionalRoles: additionalRoles.filter(r => r !== role),
         status,
-        assignedEvents: (role === 'EVENT_COORDINATOR' || secondaryRoles.includes('EVENT_COORDINATOR')) ? assignedEvents : [],
-        teamName: teamName.trim() || undefined,
-        yearSection: yearSection.trim() || undefined
+        assignedEvents: role === 'EVENT_COORDINATOR' ? assignedEvents : []
       });
       onClose();
     } catch (err: any) {
@@ -116,20 +106,20 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900">Edit User Permissions</h2>
-              <p className="text-xs text-slate-500 font-mono">@{user.username || user.email}</p>
+              <h2 className="text-base font-bold text-slate-900">Edit Staff Permissions</h2>
+              <p className="text-xs text-slate-500 font-mono">@{user.username} {user.email ? `(${user.email})` : ''}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-colors cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-3.5 max-h-[80vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -137,70 +127,21 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             </div>
           )}
 
-          {/* Full Name & Username */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Full Name <span className="text-rose-500">*</span>
-              </label>
-              <div className="relative">
-                <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-mono"
-              />
-            </div>
-          </div>
-
-          {/* Email & Team Name */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Email</label>
-              <div className="relative">
-                <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Organizing Team</label>
-              <input
-                type="text"
-                value={teamName}
-                onChange={e => setTeamName(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
-              />
-            </div>
-          </div>
-
-          {/* Year/Section */}
+          {/* Full Name */}
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Year / Section</label>
-            <input
-              type="text"
-              value={yearSection}
-              onChange={e => setYearSection(e.target.value)}
-              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
-            />
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Full Name <span className="text-rose-500">*</span>
+            </label>
+            <div className="relative">
+              <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                required
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-900"
+              />
+            </div>
           </div>
 
           {/* Primary Role Selection */}
@@ -208,131 +149,99 @@ export const EditUserModal: React.FC<EditUserModalProps> = ({
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Primary Role <span className="text-rose-500">*</span>
             </label>
-            <div className="relative">
-              <Shield className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <select
-                value={role}
-                onChange={e => setRole(e.target.value as UserRole)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 bg-white font-medium"
-              >
-                <option value="EVENT_COORDINATOR">EVENT COORDINATOR (Event-Scoped)</option>
-                <option value="ON_SPOT">ON_SPOT (Registration Desk Team)</option>
-                <option value="REGISTRATION">REGISTRATION (Online Registration & Welcome)</option>
-                <option value="DATABASE">DATABASE (All Participants Team)</option>
-                <option value="CERTIFICATE">CERTIFICATE (Read-Only Cert Team)</option>
-                <option value="ADMIN">ADMIN (Full Unrestricted Access)</option>
-              </select>
+            <CustomSelect
+              id="select-edit-user-primary-role"
+              value={role}
+              onChange={val => setRole(val as UserRole)}
+              icon={<Shield className="w-4 h-4 text-slate-400" />}
+              options={[
+                { value: 'EVENT_COORDINATOR', label: 'EVENT COORDINATOR (Assigned Events Scope)' },
+                { value: 'ON_SPOT', label: 'ON_SPOT (Registration Desk Team)' },
+                { value: 'REGISTRATION', label: 'REGISTRATION (Welcome & Online Reg Committee)' },
+                { value: 'DATABASE', label: 'DATABASE (Global All Participants Access)' },
+                { value: 'CERTIFICATE', label: 'CERTIFICATE (Certificate Desk & Printing)' },
+                { value: 'ADMIN', label: 'ADMIN (Full System Administration)' }
+              ]}
+            />
+          </div>
+
+          {/* Additional Roles Multi-Select */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+              Additional Responsibilities (Optional)
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {possibleAdditionalRoles.filter(r => r !== role).map(r => (
+                <button
+                  type="button"
+                  key={r}
+                  onClick={() => toggleAdditionalRole(r)}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                    additionalRoles.includes(r)
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  + {r.replace('_', ' ')}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Secondary Roles */}
+          {/* Account Status */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Secondary Roles
+              Account Status <span className="text-rose-500">*</span>
             </label>
-            <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border border-slate-200 rounded-xl">
-              {allRoles
-                .filter(r => r !== role)
-                .map(r => {
-                  const isChecked = secondaryRoles.includes(r);
-                  return (
-                    <button
-                      type="button"
-                      key={r}
-                      onClick={() => toggleSecondaryRole(r)}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
-                        isChecked
-                          ? 'bg-teal-50 text-teal-800 border-teal-300'
-                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      {isChecked ? '✓ ' : '+ '}
-                      {r}
-                    </button>
-                  );
-                })}
-            </div>
+            <CustomSelect
+              id="select-edit-user-status"
+              value={status}
+              onChange={val => setStatus(val as UserStatus)}
+              options={[
+                { value: 'ACTIVE', label: 'ACTIVE (Access Granted)' },
+                { value: 'INACTIVE', label: 'INACTIVE (Access Blocked)' }
+              ]}
+            />
           </div>
 
-          {/* Status Selection */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Account Status</label>
-            <div className="flex gap-3">
-              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                <input
-                  type="radio"
-                  name="edit-status"
-                  value="ACTIVE"
-                  checked={status === 'ACTIVE'}
-                  onChange={() => setStatus('ACTIVE')}
-                  className="text-indigo-600 focus:ring-indigo-500"
-                />
-                <span className="font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
-                  Active (Allowed)
-                </span>
+          {/* Event Assignment (Only for EVENT_COORDINATOR) */}
+          {role === 'EVENT_COORDINATOR' && (
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <label className="block text-xs font-semibold text-slate-700">
+                Assigned Symposium Events <span className="text-rose-500">*</span>
               </label>
-              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                <input
-                  type="radio"
-                  name="edit-status"
-                  value="INACTIVE"
-                  checked={status === 'INACTIVE'}
-                  onChange={() => setStatus('INACTIVE')}
-                  className="text-indigo-600 focus:ring-indigo-500"
-                />
-                <span className="font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100">
-                  Disabled (Denied)
-                </span>
-              </label>
-            </div>
-          </div>
-
-          {/* Assigned Events (Only for EVENT_COORDINATOR or when EVENT_COORDINATOR is a secondary role) */}
-          {(role === 'EVENT_COORDINATOR' || secondaryRoles.includes('EVENT_COORDINATOR')) && (
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>Assigned Events ({assignedEvents.length})</span>
-                </label>
-                <span className="text-[10px] text-slate-500">Coordinator can only view/export checked events</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-1 bg-white rounded-lg border border-slate-200">
-                {availableEvents.map(ev => {
-                  const isSelected = assignedEvents.includes(ev);
-                  return (
-                    <button
-                      type="button"
-                      key={ev}
-                      onClick={() => toggleEvent(ev)}
-                      className={`text-left px-2 py-1.5 rounded text-[11px] font-medium transition-colors flex items-center justify-between cursor-pointer ${
-                        isSelected
-                          ? 'bg-indigo-50 text-indigo-700 font-semibold border border-indigo-200'
-                          : 'text-slate-600 hover:bg-slate-50 border border-transparent'
-                      }`}
-                    >
-                      <span className="truncate">{ev}</span>
-                      {isSelected && <span className="text-xs font-bold text-indigo-600 ml-1">✓</span>}
-                    </button>
-                  );
-                })}
+              <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto p-2 bg-slate-50 rounded-xl border border-slate-200">
+                {availableEvents.map(eventName => (
+                  <label
+                    key={eventName}
+                    className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-white text-xs text-slate-700 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={assignedEvents.includes(eventName)}
+                      onChange={() => toggleEvent(eventName)}
+                      className="rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span className="truncate">{eventName}</span>
+                  </label>
+                ))}
               </div>
             </div>
           )}
 
-          {/* Footer Actions */}
-          <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-100">
+          {/* Submit */}
+          <div className="pt-4 flex items-center justify-end gap-2.5 border-t border-slate-100">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               <Save className="w-4 h-4" />
               <span>{isSubmitting ? 'Saving...' : 'Save Changes'}</span>

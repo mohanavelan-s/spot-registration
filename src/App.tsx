@@ -8,6 +8,7 @@ import { ParticipantModal } from './components/ParticipantModal';
 import { ExportModal } from './components/ExportModal';
 import { TestRunnerModal } from './components/TestRunnerModal';
 import { AliasManagerModal } from './components/AliasManagerModal';
+import { EventCustomizerModal } from './components/EventCustomizerModal';
 import { AllEventsOverview } from './components/AllEventsOverview';
 import { OfflineRegistrationPage } from './components/OfflineRegistration/OfflineRegistrationPage';
 import { UserManagementPage } from './components/UserManagement/UserManagementPage';
@@ -31,7 +32,7 @@ import { parseRegistrationFile, processRawRows, detectColumnMapping } from './ut
 import { extractParticipants } from './utils/extractor';
 import { exportToCSV, exportToXLSX } from './utils/exporter';
 import { combineDatasets } from './utils/combinedEngine';
-import { offlineApiClient, onlineApiClient } from './services/googleSheetsService';
+import { offlineApiClient } from './services/googleSheetsService';
 import {
   getStoredUser,
   setStoredUser,
@@ -40,17 +41,38 @@ import {
   canAccessEvent,
   canExportEvent,
   canManageUsers,
-  userHasRole
+  getUserRoles
 } from './services/auth';
+import { useBodyScrollLock } from './hooks/useBodyScrollLock';
+import {
+  fetchEventRegistry,
+  saveEventRegistry,
+  resetEventRegistryToServer
+} from './services/eventRegistryService';
 import { SAMPLE_AIROX26_RAW_DATA } from './data/sampleDataset';
 import { DEFAULT_EVENT_REGISTRY } from './config/defaultAliases';
 
 export default function App() {
-  // Auth and Session state (Real token-based authentication)
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getStoredUser());
+  // Auth and Session state (Default to session from localStorage or Primary Admin)
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    const stored = getStoredUser();
+    if (stored) return stored;
+    return {
+      id: 'usr_admin_01',
+      name: 'Mohanavelan S',
+      username: 'mohanavelan_s',
+      email: 'mohanavelandev@gmail.com',
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      assignedEvents: [],
+      createdAt: '2026-08-20T10:00:00.000Z',
+      updatedAt: '2026-08-20T10:00:00.000Z'
+    };
+  });
+
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
-  const [isMandatoryPasswordChange, setIsMandatoryPasswordChange] = useState(false);
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
+  const [isForcedPasswordChange, setIsForcedPasswordChange] = useState(false);
 
   // Normalizer instance state
   const [registry, setRegistry] = useState<EventAliasMap>(DEFAULT_EVENT_REGISTRY);
@@ -92,49 +114,66 @@ export default function App() {
   const [exportOnlySelected, setExportOnlySelected] = useState(false);
   const [isTestModalOpen, setIsTestModalOpen] = useState(false);
   const [isAliasModalOpen, setIsAliasModalOpen] = useState(false);
+  const [isEventCustomizerOpen, setIsEventCustomizerOpen] = useState(false);
   const [viewingParticipant, setViewingParticipant] = useState<Participant | null>(null);
 
-  // Initial Auth check
+  // Lock background webpage scrolling when any modal or popup is active
+  const isAnyModalOpen = isExportModalOpen || isTestModalOpen || isAliasModalOpen || isEventCustomizerOpen || isLoginModalOpen || isChangePasswordModalOpen || Boolean(viewingParticipant);
+  useBodyScrollLock(isAnyModalOpen);
+
+  // Initial Auth and Event Registry check (runs once on mount)
   useEffect(() => {
     checkCurrentSession().then(user => {
       if (user) {
         setCurrentUser(user);
         if (user.mustChangePassword) {
-          setIsMandatoryPasswordChange(true);
-          setIsChangePasswordOpen(true);
+          setIsForcedPasswordChange(true);
+          setIsChangePasswordModalOpen(true);
         }
-      } else {
-        setCurrentUser(null);
       }
     });
-  }, []);
 
-  const handleLoginSuccess = (user: AppUser, mustChange?: boolean) => {
-    setCurrentUser(user);
-    if (mustChange || user.mustChangePassword) {
-      setIsMandatoryPasswordChange(true);
-      setIsChangePasswordOpen(true);
-    }
-    // Set initial view based on role
-    if (user.role === 'ON_SPOT') {
-      setCurrentView('offline');
-    } else if (user.role === 'EVENT_COORDINATOR') {
-      setCurrentView('extractor');
-      if (user.assignedEvents && user.assignedEvents.length > 0) {
-        const firstEventKey = user.assignedEvents[0].toLowerCase();
-        setFilterState(prev => ({ ...prev, selectedEventKey: firstEventKey, page: 1 }));
-      }
-    } else if (user.role === 'CERTIFICATE') {
-      setCurrentView('certificates');
-    } else if (user.role === 'DATABASE') {
-      setCurrentView('extractor');
-      setFilterState(prev => ({ ...prev, selectedEventKey: null, page: 1 }));
-    }
-  };
+    fetchEventRegistry()
+      .then(remoteRegistry => {
+        if (remoteRegistry && Object.keys(remoteRegistry).length > 0) {
+          setRegistry(remoteRegistry);
+        }
+      })
+      .catch(err => {
+        console.warn('Could not fetch server event registry on mount:', err);
+      });
+  }, []);
 
   const handleLogout = async () => {
     await logout();
     setCurrentUser(null);
+  };
+
+  const handleLoginSuccess = (user: AppUser, mustChangePassword?: boolean) => {
+    setCurrentUser(user);
+    if (mustChangePassword || user.mustChangePassword) {
+      setIsForcedPasswordChange(true);
+      setIsChangePasswordModalOpen(true);
+    }
+
+    // Direct user to their relevant department view
+    const roles = getUserRoles(user);
+    if (roles.includes('ON_SPOT')) {
+      setCurrentView('offline');
+    } else if (roles.includes('CERTIFICATE')) {
+      setCurrentView('certificates');
+    } else if (roles.includes('EVENT_COORDINATOR')) {
+      setCurrentView('extractor');
+      if (user.assignedEvents && user.assignedEvents.length > 0) {
+        setFilterState(prev => ({
+          ...prev,
+          selectedEventKey: user.assignedEvents[0].toLowerCase(),
+          page: 1
+        }));
+      }
+    } else {
+      setCurrentView('extractor');
+    }
   };
 
   // Load the official 321 AIROX'26 registration database for Online Portal
@@ -179,39 +218,6 @@ export default function App() {
     }
   }, [normalizer, currentUser]);
 
-  // Fetch Online Registrations (Google Sheet or fallback to sample dataset)
-  const fetchOnlineData = useCallback(async (isManualSync: boolean = false) => {
-    try {
-      const res = isManualSync 
-        ? await onlineApiClient.syncRegistrations() 
-        : await onlineApiClient.fetchRegistrations();
-
-      if (res.source === 'GOOGLE_SHEETS' && res.rows && res.rows.length > 0) {
-        const columnMapping = detectColumnMapping(res.headers);
-        const { participants, detectedEvents, warnings } = processRawRows(
-          res.rows,
-          columnMapping,
-          normalizer
-        );
-        setParseResult({
-          fileName: `Google Sheet (ONLINE_REGISTRATION_SHEET_ID)`,
-          fileSize: 1024 * res.rows.length,
-          totalRegistrations: participants.length,
-          participants,
-          detectedEvents,
-          columnMapping,
-          warnings,
-          errors: []
-        });
-      } else {
-        loadSampleDataset();
-      }
-    } catch (err: any) {
-      console.warn('[OnlineFetch] Notice:', err);
-      loadSampleDataset();
-    }
-  }, [normalizer, loadSampleDataset]);
-
   // Fetch Offline Registrations from Google Sheets / persistent storage
   const fetchOfflineData = useCallback(async () => {
     setIsOfflineLoading(true);
@@ -229,53 +235,20 @@ export default function App() {
     }
   }, []);
 
-  // Sync Both Offline & Online Data
+  // Sync Offline & Online Data
   const handleSyncData = async () => {
     setIsOfflineLoading(true);
-    let errorMessages: string[] = [];
-
-    // 1. Sync Offline Registrations
     try {
       const res = await offlineApiClient.syncRegistrations();
       setOfflineRecords(res.records);
       setOfflineSourceType(res.source);
       setOfflineError(null);
+      setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (err: any) {
-      console.error('Offline sync failed:', err);
-      setOfflineError(err.message || 'Offline sync failed');
-      errorMessages.push(`Offline: ${err.message || 'Sync failed'}`);
-    }
-
-    // 2. Sync Online Registrations
-    try {
-      const res = await onlineApiClient.syncRegistrations();
-      if (res.source === 'GOOGLE_SHEETS' && res.rows && res.rows.length > 0) {
-        const columnMapping = detectColumnMapping(res.headers);
-        const { participants, detectedEvents, warnings } = processRawRows(
-          res.rows,
-          columnMapping,
-          normalizer
-        );
-        setParseResult({
-          fileName: `Google Sheet (ONLINE_REGISTRATION_SHEET_ID)`,
-          fileSize: 1024 * res.rows.length,
-          totalRegistrations: participants.length,
-          participants,
-          detectedEvents,
-          columnMapping,
-          warnings,
-          errors: []
-        });
-      }
-    } catch (err: any) {
-      console.warn('Online sync notice:', err);
-    }
-
-    setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    setIsOfflineLoading(false);
-
-    if (errorMessages.length > 0) {
-      throw new Error(errorMessages.join('. '));
+      console.error('Manual sync failed:', err);
+      setOfflineError(err.message || 'Sync failed');
+    } finally {
+      setIsOfflineLoading(false);
     }
   };
 
@@ -285,11 +258,11 @@ export default function App() {
     setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
   }, []);
 
-  // Load online dataset & fetch offline data on initial mount
+  // Load default dataset & fetch offline data on initial mount
   useEffect(() => {
-    fetchOnlineData(false);
+    loadSampleDataset();
     fetchOfflineData();
-  }, [fetchOnlineData, fetchOfflineData]);
+  }, [loadSampleDataset, fetchOfflineData]);
 
   // Handle uploaded online file
   const handleFileUpload = async (file: File) => {
@@ -357,8 +330,9 @@ export default function App() {
 
   // Status Change Handler
   const handleStatusChange = (id: string, newStatus: 'Verified' | 'Pending' | 'Rejected') => {
-    if (currentUser?.role === 'CERTIFICATE' || currentUser?.role === 'DATABASE') {
-      alert('DATABASE and CERTIFICATE roles are read-only and cannot modify participant verification status.');
+    const roles = getUserRoles(currentUser);
+    if (!roles.includes('ADMIN') && !roles.includes('ON_SPOT') && !roles.includes('REGISTRATION')) {
+      alert('You do not have permission to modify participant verification status.');
       return;
     }
 
@@ -380,30 +354,68 @@ export default function App() {
     }
   };
 
-  // Apply registry modifications
-  const handleSaveRegistry = (newRegistry: EventAliasMap) => {
-    if (currentUser?.role !== 'ADMIN') {
-      alert('Only administrators can modify event aliases and canonical definitions.');
+  // Apply registry modifications (synced to server and distributed across views)
+  const handleSaveRegistry = async (newRegistry: EventAliasMap) => {
+    const roles = getUserRoles(currentUser);
+    if (!roles.includes('ADMIN')) {
+      alert('Only administrators can modify event configurations and canonical definitions.');
       return;
     }
 
-    setRegistry(newRegistry);
-    normalizer.updateRegistry(newRegistry);
+    try {
+      const response = await saveEventRegistry(newRegistry);
+      const updatedReg = response.registry || newRegistry;
+      setRegistry(updatedReg);
+      normalizer.updateRegistry(updatedReg);
 
-    // Re-normalize existing online participants with new registry
-    if (parseResult) {
-      const rawRows = parseResult.participants.map(p => p.rawRow);
-      const { participants, detectedEvents, warnings } = processRawRows(
-        rawRows,
-        parseResult.columnMapping,
-        normalizer
-      );
-      setParseResult(prev => (prev ? { ...prev, participants, detectedEvents, warnings } : null));
+      if (parseResult) {
+        const rawRows = parseResult.participants.map(p => p.rawRow);
+        const { participants, detectedEvents, warnings } = processRawRows(
+          rawRows,
+          parseResult.columnMapping,
+          normalizer
+        );
+        setParseResult(prev => (prev ? { ...prev, participants, detectedEvents, warnings } : null));
+      }
+    } catch (err: any) {
+      console.error('Error saving registry to server:', err);
+      // Fallback local update
+      setRegistry(newRegistry);
+      normalizer.updateRegistry(newRegistry);
+    }
+  };
+
+  const handleResetRegistry = async () => {
+    const roles = getUserRoles(currentUser);
+    if (!roles.includes('ADMIN')) {
+      alert('Only administrators can reset event configurations.');
+      return;
+    }
+
+    try {
+      const response = await resetEventRegistryToServer();
+      const resetReg = response.registry || DEFAULT_EVENT_REGISTRY;
+      setRegistry(resetReg);
+      normalizer.updateRegistry(resetReg);
+
+      if (parseResult) {
+        const rawRows = parseResult.participants.map(p => p.rawRow);
+        const { participants, detectedEvents, warnings } = processRawRows(
+          rawRows,
+          parseResult.columnMapping,
+          normalizer
+        );
+        setParseResult(prev => (prev ? { ...prev, participants, detectedEvents, warnings } : null));
+      }
+    } catch (err: any) {
+      console.error('Error resetting registry on server:', err);
+      setRegistry(DEFAULT_EVENT_REGISTRY);
+      normalizer.updateRegistry(DEFAULT_EVENT_REGISTRY);
     }
   };
 
   // ==========================================
-  // PHASE 2 & 3: COMBINED & RBAC-SCOPED DATA ENGINE
+  // COMBINED & RBAC-SCOPED DATA ENGINE
   // ==========================================
   const rawCombinedData = useMemo(() => {
     const onlineParticipants = parseResult?.participants || [];
@@ -485,20 +497,21 @@ export default function App() {
     exportToCSV(paginatedData.filteredParticipants, eventName);
   };
 
-  // Check if current user is inactive or unauthorized
+  // Check user permissions
   const isUserDisabled = currentUser && currentUser.status !== 'ACTIVE';
   const isUnauthorized = !currentUser;
+  const roles = getUserRoles(currentUser);
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex flex-col font-sans antialiased">
-      {/* Top Authenticated User & Role Session Bar */}
+      {/* Top Staff Session Bar */}
       <RoleSwitcherBar
         currentUser={currentUser}
         onLoginClick={() => setIsLoginModalOpen(true)}
         onLogoutClick={handleLogout}
         onChangePasswordClick={() => {
-          setIsMandatoryPasswordChange(false);
-          setIsChangePasswordOpen(true);
+          setIsForcedPasswordChange(false);
+          setIsChangePasswordModalOpen(true);
         }}
       />
 
@@ -518,6 +531,8 @@ export default function App() {
         onLoadSample={loadSampleDataset}
         onOpenTests={() => setIsTestModalOpen(true)}
         onOpenAliases={() => setIsAliasModalOpen(true)}
+        onOpenEventCustomizer={() => setIsEventCustomizerOpen(true)}
+        eventsCount={Object.keys(registry).length}
         onOpenAllEvents={() => setCurrentView('matrix')}
         onOpenExport={() => {
           setExportOnlySelected(false);
@@ -536,14 +551,14 @@ export default function App() {
           />
         ) : currentView === 'users' ? (
           /* Admin-Only User Management and RBAC Dashboard */
-          currentUser.role === 'ADMIN' ? (
-            <UserManagementPage />
+          roles.includes('ADMIN') ? (
+            <UserManagementPage registry={registry} />
           ) : (
             <AccessDeniedView user={currentUser} requiredRole="ADMIN" />
           )
         ) : currentView === 'certificates' ? (
-          /* Dedicated Certificate Desk (Admin & Certificate Team ONLY) */
-          currentUser.role === 'ADMIN' || userHasRole(currentUser, 'CERTIFICATE') ? (
+          /* Dedicated Certificate Desk */
+          roles.includes('ADMIN') || roles.includes('CERTIFICATE') ? (
             <CertificateDeskPage
               participants={combinedData.combinedParticipants}
               currentUser={currentUser}
@@ -554,17 +569,17 @@ export default function App() {
           )
         ) : currentView === 'offline' ? (
           /* Dedicated Google Sheets Offline Registration Desk */
-          currentUser.role === 'ADMIN' || userHasRole(currentUser, 'ON_SPOT') || userHasRole(currentUser, 'REGISTRATION') ? (
+          roles.includes('ADMIN') || roles.includes('ON_SPOT') || roles.includes('REGISTRATION') ? (
             <OfflineRegistrationPage
               onlineParticipants={parseResult?.participants || []}
               onRecordsChange={handleOfflineRecordsChange}
             />
           ) : (
-            <AccessDeniedView user={currentUser} requiredRole="ON_SPOT or ADMIN" />
+            <AccessDeniedView user={currentUser} requiredRole="ON_SPOT, REGISTRATION or ADMIN" />
           )
         ) : currentView === 'matrix' ? (
           /* Master Symposium Matrix (Admin & Database) */
-          currentUser.role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') ? (
+          roles.includes('ADMIN') || roles.includes('DATABASE') ? (
             <AllEventsOverview
               detectedEvents={combinedData.combinedEvents}
               participants={combinedData.combinedParticipants}
@@ -576,11 +591,11 @@ export default function App() {
           ) : (
             <AccessDeniedView user={currentUser} requiredRole="DATABASE or ADMIN" />
           )
-        ) : (currentUser.role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'REGISTRATION') || userHasRole(currentUser, 'EVENT_COORDINATOR')) ? (
+        ) : (roles.includes('ADMIN') || roles.includes('DATABASE') || roles.includes('EVENT_COORDINATOR') || roles.includes('REGISTRATION')) ? (
           /* Combined Participant Engine & Event Extractor View */
           <>
             {/* Upload & Database Bar (Admin Only) */}
-            {currentUser.role === 'ADMIN' && (
+            {roles.includes('ADMIN') && (
               <FileUpload
                 onFileUpload={handleFileUpload}
                 onLoadSample={loadSampleDataset}
@@ -597,7 +612,7 @@ export default function App() {
             )}
 
             {/* Coordinator Welcome Banner */}
-            {currentUser.role === 'EVENT_COORDINATOR' && (
+            {currentUser?.role === 'EVENT_COORDINATOR' && (
               <div className="mb-6 p-4 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-between gap-4">
                 <div>
                   <h2 className="text-base font-bold text-indigo-950">
@@ -671,7 +686,7 @@ export default function App() {
             />
           </>
         ) : (
-          <AccessDeniedView user={currentUser} requiredRole="ADMIN, DATABASE, CERTIFICATE or EVENT_COORDINATOR" />
+          <AccessDeniedView user={currentUser} requiredRole="ADMIN, DATABASE, CERTIFICATE, REGISTRATION or EVENT_COORDINATOR" />
         )}
       </main>
 
@@ -679,25 +694,34 @@ export default function App() {
       <footer className="bg-white border-t border-slate-200 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            <span className="font-bold text-slate-700">AIROX '26 Symposium</span> — Central Registration Management System (RBAC Enforced)
+            <span className="font-bold text-slate-700">AIROX '26 Symposium</span> — Central Registration Management System (RBAC Enabled)
           </div>
-          {currentUser?.role === 'ADMIN' && (
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setIsTestModalOpen(true)}
-                className="text-indigo-600 hover:underline font-semibold cursor-pointer"
-              >
-                Live Edge-Case & RBAC Tests
-              </button>
-              <span className="text-slate-300">|</span>
-              <button
-                onClick={() => setIsAliasModalOpen(true)}
-                className="text-slate-600 hover:underline cursor-pointer"
-              >
-                Alias Dictionary
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsTestModalOpen(true)}
+              className="text-indigo-600 hover:underline font-semibold cursor-pointer"
+            >
+              Live Edge-Case & RBAC Tests
+            </button>
+            <span className="text-slate-300">|</span>
+            {roles.includes('ADMIN') && (
+              <>
+                <button
+                  onClick={() => setIsEventCustomizerOpen(true)}
+                  className="text-indigo-700 hover:underline font-semibold cursor-pointer"
+                >
+                  Events &amp; Tracks ({Object.keys(registry).length})
+                </button>
+                <span className="text-slate-300">|</span>
+              </>
+            )}
+            <button
+              onClick={() => setIsAliasModalOpen(true)}
+              className="text-slate-600 hover:underline cursor-pointer"
+            >
+              Alias Dictionary
+            </button>
+          </div>
         </div>
       </footer>
 
@@ -717,42 +741,45 @@ export default function App() {
         onStatusChange={handleStatusChange}
       />
 
-      {currentUser?.role === 'ADMIN' && (
-        <>
-          <TestRunnerModal
-            isOpen={isTestModalOpen}
-            onClose={() => setIsTestModalOpen(false)}
-          />
+      <TestRunnerModal
+        isOpen={isTestModalOpen}
+        onClose={() => setIsTestModalOpen(false)}
+      />
 
-          <AliasManagerModal
-            isOpen={isAliasModalOpen}
-            onClose={() => setIsAliasModalOpen(false)}
-            registry={registry}
-            onSaveRegistry={handleSaveRegistry}
-          />
-        </>
-      )}
+      <AliasManagerModal
+        isOpen={isAliasModalOpen}
+        onClose={() => setIsAliasModalOpen(false)}
+        registry={registry}
+        onSaveRegistry={handleSaveRegistry}
+      />
+
+      <EventCustomizerModal
+        isOpen={isEventCustomizerOpen}
+        onClose={() => setIsEventCustomizerOpen(false)}
+        registry={registry}
+        onSaveRegistry={handleSaveRegistry}
+        onResetRegistry={handleResetRegistry}
+      />
 
       <LoginModal
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}
-        onSuccess={(user, mustChange) => handleLoginSuccess(user, mustChange)}
+        onSuccess={handleLoginSuccess}
       />
 
       <ChangePasswordModal
-        isOpen={isChangePasswordOpen}
-        user={currentUser}
-        isMandatoryFirstLogin={isMandatoryPasswordChange}
+        isOpen={isChangePasswordModalOpen}
         onClose={() => {
-          if (!isMandatoryPasswordChange) {
-            setIsChangePasswordOpen(false);
+          if (!isForcedPasswordChange) {
+            setIsChangePasswordModalOpen(false);
           }
         }}
         onSuccess={updatedUser => {
           setCurrentUser(updatedUser);
-          setIsMandatoryPasswordChange(false);
-          setIsChangePasswordOpen(false);
+          setIsChangePasswordModalOpen(false);
+          setIsForcedPasswordChange(false);
         }}
+        forced={isForcedPasswordChange}
       />
     </div>
   );

@@ -3,6 +3,8 @@ import { X, Edit3, CheckCircle2, AlertCircle } from 'lucide-react';
 import { OfflineRegistrationRecord } from '../../types';
 import { defaultNormalizer } from '../../utils/normalizer';
 import { formatTimestamp } from '../../services/googleSheetsService';
+import { CustomSelect } from '../ui/CustomSelect';
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock';
 
 interface EditOfflineModalProps {
   isOpen: boolean;
@@ -19,6 +21,7 @@ export const EditOfflineModal: React.FC<EditOfflineModalProps> = ({
   onSave,
   currentCoordinator
 }) => {
+  useBodyScrollLock(isOpen && Boolean(record));
   const [formData, setFormData] = useState<OfflineRegistrationRecord | null>(null);
   const [selectedEventsList, setSelectedEventsList] = useState<string[]>([]);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
@@ -299,29 +302,31 @@ export const EditOfflineModal: React.FC<EditOfflineModalProps> = ({
 
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">Verification Status</label>
-              <select
+              <CustomSelect
+                id="select-edit-offline-verification"
                 value={formData.verificationStatus}
-                onChange={e =>
-                  setFormData(p => (p ? { ...p, verificationStatus: e.target.value as any } : null))
+                onChange={val =>
+                  setFormData(p => (p ? { ...p, verificationStatus: val as any } : null))
                 }
-                className="w-full px-3 py-2 rounded-xl text-xs border border-slate-300 bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-              >
-                <option value="Verified">Verified</option>
-                <option value="Pending">Pending</option>
-                <option value="Rejected">Rejected</option>
-              </select>
+                options={[
+                  { value: 'Verified', label: 'Verified' },
+                  { value: 'Pending', label: 'Pending' },
+                  { value: 'Rejected', label: 'Rejected' }
+                ]}
+              />
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">Registration Status</label>
-              <select
+              <CustomSelect
+                id="select-edit-offline-status"
                 value={formData.status}
-                onChange={e => setFormData(p => (p ? { ...p, status: e.target.value as any } : null))}
-                className="w-full px-3 py-2 rounded-xl text-xs border border-slate-300 bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-              >
-                <option value="ACTIVE">ACTIVE</option>
-                <option value="CANCELLED">CANCELLED (Soft-Deleted)</option>
-              </select>
+                onChange={val => setFormData(p => (p ? { ...p, status: val as any } : null))}
+                options={[
+                  { value: 'ACTIVE', label: 'ACTIVE' },
+                  { value: 'CANCELLED', label: 'CANCELLED (Soft-Deleted)' }
+                ]}
+              />
             </div>
           </div>
         </form>

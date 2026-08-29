@@ -52,12 +52,14 @@ export interface DetectedEvent {
   sampleRawOccurrences: string[];
 }
 
+export interface EventConfig {
+  displayName: string;
+  category?: 'Technical' | 'Non-Technical' | 'Both';
+  aliases: string[];
+}
+
 export interface EventAliasMap {
-  [canonicalKey: string]: {
-    displayName: string;
-    category?: 'Technical' | 'Non-Technical' | 'Both';
-    aliases: string[];
-  };
+  [canonicalKey: string]: EventConfig;
 }
 
 export interface ColumnMapping {
@@ -191,14 +193,12 @@ export type UserStatus = 'ACTIVE' | 'INACTIVE';
 export interface AppUser {
   id: string;
   name: string;
-  username?: string; // e.g. "mohanavelan_s"
+  username: string;
   email: string;
   role: UserRole;
-  secondaryRoles?: UserRole[]; // for users in multiple teams
+  additionalRoles?: UserRole[];
   status: UserStatus;
   assignedEvents: string[]; // List of canonical event display names, e.g. ["The Final Hire"]
-  teamName?: string;
-  yearSection?: string;
   mustChangePassword?: boolean;
   createdAt: string;
   updatedAt: string;
@@ -209,6 +209,8 @@ export interface AppUser {
 export type AuditActionType =
   | 'LOGIN'
   | 'LOGOUT'
+  | 'PASSWORD_CHANGED'
+  | 'PASSWORD_RESET'
   | 'OFFLINE_REGISTRATION_CREATED'
   | 'OFFLINE_REGISTRATION_UPDATED'
   | 'OFFLINE_REGISTRATION_CANCELLED'
@@ -222,6 +224,7 @@ export type AuditActionType =
   | 'USER_STATUS_CHANGED'
   | 'USER_DELETED'
   | 'ACCESS_DENIED'
+  | 'EVENT_REGISTRY_UPDATED'
   | 'DIAGNOSTIC_RUN';
 
 export interface AuditLogEntry {

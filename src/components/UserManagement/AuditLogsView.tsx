@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Shield, RefreshCw, Filter, Search, Clock, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { AuditLogEntry, UserRole } from '../../types';
 import { fetchAuditLogs } from '../../services/auth';
+import { CustomSelect } from '../ui/CustomSelect';
 
 export const AuditLogsView: React.FC = () => {
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
@@ -65,21 +66,25 @@ export const AuditLogsView: React.FC = () => {
               className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900"
             />
           </div>
-          <select
-            value={actionFilter}
-            onChange={e => setActionFilter(e.target.value)}
-            className="text-xs py-1.5 px-3 rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            <option value="ALL">All Actions</option>
-            <option value="LOGIN">Logins</option>
-            <option value="OFFLINE_REGISTRATION_CREATED">Offline Created</option>
-            <option value="OFFLINE_REGISTRATION_UPDATED">Offline Updated</option>
-            <option value="OFFLINE_REGISTRATION_CANCELLED">Offline Cancelled</option>
-            <option value="DATA_SYNCED">Data Syncs</option>
-            <option value="ROSTER_EXPORTED">Exports</option>
-            <option value="USER_ROLE_CHANGED">Role Changes</option>
-            <option value="ACCESS_DENIED">Access Denied (Security)</option>
-          </select>
+          <div className="w-56">
+            <CustomSelect
+              id="select-audit-action-filter"
+              value={actionFilter}
+              onChange={val => setActionFilter(val)}
+              size="sm"
+              options={[
+                { value: 'ALL', label: 'All Actions' },
+                { value: 'LOGIN', label: 'Logins' },
+                { value: 'OFFLINE_REGISTRATION_CREATED', label: 'Offline Created' },
+                { value: 'OFFLINE_REGISTRATION_UPDATED', label: 'Offline Updated' },
+                { value: 'OFFLINE_REGISTRATION_CANCELLED', label: 'Offline Cancelled' },
+                { value: 'DATA_SYNCED', label: 'Data Syncs' },
+                { value: 'ROSTER_EXPORTED', label: 'Exports' },
+                { value: 'USER_ROLE_CHANGED', label: 'Role Changes' },
+                { value: 'ACCESS_DENIED', label: 'Access Denied (Security)' }
+              ]}
+            />
+          </div>
         </div>
 
         <div className="flex items-center gap-2">

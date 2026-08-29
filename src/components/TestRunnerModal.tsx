@@ -17,6 +17,7 @@ import {
   canAccessParticipantsSection,
   canAccessEventsMatrix
 } from '../services/auth';
+import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 
 interface TestRunnerModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ interface TestRunnerModalProps {
 }
 
 export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClose }) => {
+  useBodyScrollLock(isOpen);
   const [results, setResults] = useState<TestCaseResult[]>([]);
   const [isRunning, setIsRunning] = useState(false);
 
@@ -185,6 +187,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
     // Test 8: RBAC - Event Coordinator Scoping
     const testCoordinatorA: AppUser = {
       id: 'coord-a',
+      username: 'coord_a',
       email: 'coordinator.finalhire@airox26.org',
       name: 'Final Hire Coordinator',
       role: 'EVENT_COORDINATOR',
@@ -215,6 +218,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
     // Test 9: RBAC - On-Spot Registration Desk Role
     const testOnSpot: AppUser = {
       id: 'onspot-1',
+      username: 'onspot_1',
       email: 'onspot@airox26.org',
       name: 'Registration Desk Staff',
       role: 'ON_SPOT',
@@ -239,6 +243,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
     // Test 10: RBAC - Account Disabling (Default Deny)
     const testDisabledUser: AppUser = {
       id: 'dis-1',
+      username: 'dis_1',
       email: 'disabled@airox26.org',
       name: 'Disabled Staff',
       role: 'ADMIN', // Even if previously admin!
@@ -264,6 +269,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
     // Test 11: RBAC - DATABASE Role Global Access
     const testDatabaseUser: AppUser = {
       id: 'db-test-user',
+      username: 'db_test_user',
       email: 'database@airox26.org',
       name: 'Database Team Lead',
       role: 'DATABASE',
@@ -320,6 +326,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ isOpen, onClos
     // Test 13: RBAC - CERTIFICATE Role Dedicated Access to Certificate Desk
     const testCertUser: AppUser = {
       id: 'cert-test-user',
+      username: 'cert_lead',
       email: 'certificate@airox26.org',
       name: 'Certificate Team Lead',
       role: 'CERTIFICATE',

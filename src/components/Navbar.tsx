@@ -5,16 +5,13 @@ import {
   BarChart3,
   Users,
   RefreshCw,
-  UploadCloud,
-  PlayCircle,
-  Sliders,
   Award,
   Calendar,
-  Lock,
-  Download
+  KeyRound,
+  SlidersHorizontal
 } from 'lucide-react';
 import { AppUser, UserRole } from '../types';
-import { userHasRole } from '../services/auth';
+import { getUserRoles } from '../services/auth';
 
 export type AppViewMode = 'extractor' | 'matrix' | 'offline' | 'users' | 'certificates';
 
@@ -34,6 +31,8 @@ interface NavbarProps {
   onOpenExport?: () => void;
   onSyncData?: () => void;
   isSyncing?: boolean;
+  onOpenEventCustomizer?: () => void;
+  eventsCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -51,18 +50,20 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAllEvents,
   onOpenExport,
   onSyncData,
-  isSyncing = false
+  isSyncing = false,
+  onOpenEventCustomizer,
+  eventsCount
 }) => {
-  const role = currentUser?.role;
+  const roles = getUserRoles(currentUser);
 
-  // Determine allowed navigation items per role (supporting secondary roles)
-  const canSeeCombined = !currentUser || role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'REGISTRATION') || userHasRole(currentUser, 'EVENT_COORDINATOR');
-  const canSeeOfflineDesk = !currentUser || role === 'ADMIN' || userHasRole(currentUser, 'ON_SPOT') || userHasRole(currentUser, 'REGISTRATION');
-  const canSeeMatrix = !currentUser || role === 'ADMIN' || userHasRole(currentUser, 'DATABASE');
-  const canSeeUserManagement = currentUser && role === 'ADMIN';
-  const canSeeCertificates = currentUser && (role === 'ADMIN' || userHasRole(currentUser, 'CERTIFICATE'));
-  const isCoordinator = currentUser && role === 'EVENT_COORDINATOR';
-  const isCertificateRole = currentUser && role === 'CERTIFICATE';
+  // Determine allowed navigation items per role
+  const canSeeCombined = !currentUser || roles.includes('ADMIN') || roles.includes('DATABASE') || roles.includes('EVENT_COORDINATOR') || roles.includes('REGISTRATION');
+  const canSeeOfflineDesk = !currentUser || roles.includes('ADMIN') || roles.includes('ON_SPOT') || roles.includes('REGISTRATION');
+  const canSeeMatrix = !currentUser || roles.includes('ADMIN') || roles.includes('DATABASE');
+  const canSeeUserManagement = currentUser && roles.includes('ADMIN');
+  const canSeeCertificates = currentUser && (roles.includes('ADMIN') || roles.includes('CERTIFICATE'));
+  const isCoordinator = currentUser && currentUser.role === 'EVENT_COORDINATOR';
+  const isCertificateRole = currentUser && currentUser.role === 'CERTIFICATE';
 
   return (
     <header id="airox-header" className="bg-white border-b border-slate-200 text-slate-900 sticky top-0 z-30 shadow-xs">
@@ -80,7 +81,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </h1>
                 {currentUser && (
                   <span className="hidden sm:inline-flex text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase tracking-wider">
-                    {currentUser.role === 'CERTIFICATE' ? 'CERTIFICATE DESK' : currentUser.role}
+                    {currentUser.role.replace('_', ' ')}
                   </span>
                 )}
               </div>
@@ -121,7 +122,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Offline Desk (Admin & On-Spot & Registration) */}
+            {/* Offline Desk (Admin, On-Spot, Registration) */}
             {canSeeOfflineDesk && (
               <button
                 id="tab-offline"
@@ -144,6 +145,22 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
+            {/* Certificate Desk */}
+            {canSeeCertificates && (
+              <button
+                id="tab-certificates"
+                onClick={() => setCurrentView('certificates')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  currentView === 'certificates'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Award className="w-3.5 h-3.5" />
+                <span>Certificate Desk</span>
+              </button>
+            )}
+
             {/* Matrix / Events (Admin & Database) */}
             {canSeeMatrix && (
               <button
@@ -160,23 +177,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Certificate Team View */}
-            {canSeeCertificates && (
-              <button
-                id="tab-certificates"
-                onClick={() => setCurrentView('certificates')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  currentView === 'certificates'
-                    ? 'bg-amber-600 text-white shadow-xs'
-                    : 'text-amber-800 hover:bg-amber-50'
-                }`}
-              >
-                <Award className="w-3.5 h-3.5" />
-                <span>Certificate Desk</span>
-              </button>
-            )}
-
-            {/* Admin Users & RBAC */}
+            {/* Admin-Only User Management Tab */}
             {canSeeUserManagement && (
               <button
                 id="tab-users"
@@ -184,76 +185,46 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                   currentView === 'users'
                     ? 'bg-purple-600 text-white shadow-xs'
-                    : 'text-purple-700 hover:bg-purple-50'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Users className="w-3.5 h-3.5" />
-                <span>Users & RBAC</span>
+                <span>User Management</span>
               </button>
             )}
           </div>
 
-          {/* Right Action Controls */}
-          <div className="flex items-center gap-2 sm:gap-2.5">
-            {/* Quick Export button for Coordinators, Database, or Admin (NOT CERTIFICATE) */}
-            {onOpenExport && (role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'EVENT_COORDINATOR')) && (
+          {/* Right Action Icons & Sync */}
+          <div className="flex items-center gap-2">
+            {/* Admin-Only Events & Tracks Customizer */}
+            {roles.includes('ADMIN') && onOpenEventCustomizer && (
               <button
-                id="btn-quick-export"
-                onClick={onOpenExport}
-                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-semibold border border-emerald-200 transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
-                title="Export Authorized Participant Rosters (XLSX / CSV)"
+                id="btn-manage-events-tracks"
+                onClick={onOpenEventCustomizer}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold border border-indigo-200 transition shadow-2xs hover:shadow-xs active:scale-95 cursor-pointer"
+                title="Customise symposium event names, tracks (Technical / Non-Technical), and total events"
               >
-                <Download className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="hidden sm:inline">Export</span>
+                <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span className="hidden sm:inline">Events &amp; Tracks</span>
+                <span className="sm:hidden">Events</span>
+                {typeof eventsCount === 'number' && (
+                  <span className="px-1.5 py-0.2 rounded-md text-[10px] font-black bg-indigo-200/80 text-indigo-900">
+                    {eventsCount}
+                  </span>
+                )}
               </button>
             )}
 
-            {onSyncData && (role === 'ADMIN' || userHasRole(currentUser, 'DATABASE') || userHasRole(currentUser, 'ON_SPOT') || userHasRole(currentUser, 'EVENT_COORDINATOR')) && (
+            {onSyncData && (
               <button
-                id="btn-sync-data"
+                id="btn-sync-live-data"
                 onClick={onSyncData}
                 disabled={isSyncing}
-                className="bg-white hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
-                title="Sync and Re-combine Online & Offline Google Sheets Registrations"
+                className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-xl transition-colors disabled:opacity-50 cursor-pointer"
+                title="Sync Live Data with Google Sheets"
               >
-                <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isSyncing ? 'animate-spin' : ''}`} />
-                <span className="hidden sm:inline">{isSyncing ? 'Syncing...' : 'Sync'}</span>
+                <RefreshCw className={`w-4 h-4 shrink-0 transform-gpu ${isSyncing ? 'animate-spin text-indigo-600' : 'transition-transform duration-300'}`} />
               </button>
-            )}
-
-            {/* Admin only: upload, tests, aliases */}
-            {role === 'ADMIN' && (
-              <>
-                <button
-                  id="btn-upload-file"
-                  onClick={onOpenUpload}
-                  className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-semibold border border-indigo-100 transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
-                  title="Upload Online Registration Excel/CSV"
-                >
-                  <UploadCloud className="w-3.5 h-3.5 text-indigo-600" />
-                  <span className="hidden lg:inline">Update File</span>
-                </button>
-
-                <button
-                  id="btn-test-suite"
-                  onClick={onOpenTests}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium border border-slate-200 transition-colors shadow-xs cursor-pointer"
-                  title="Live Edge-Case & RBAC Tests"
-                >
-                  <PlayCircle className="w-3.5 h-3.5 text-amber-600" />
-                  <span className="hidden xl:inline">Tests</span>
-                </button>
-
-                <button
-                  id="btn-alias-settings"
-                  onClick={onOpenAliases}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium border border-slate-200 transition-colors shadow-xs cursor-pointer"
-                  title="Aliases & Settings"
-                >
-                  <Sliders className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="hidden xl:inline">Aliases</span>
-                </button>
-              </>
             )}
           </div>
         </div>

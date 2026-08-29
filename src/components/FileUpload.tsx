@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { UploadCloud, FileSpreadsheet, AlertCircle, CheckCircle2, RefreshCw, Sparkles, FileText } from 'lucide-react';
 import { ColumnMapping } from '../types';
+import { CustomSelect } from './ui/CustomSelect';
 
 interface FileUploadProps {
   onFileUpload: (file: File) => Promise<void>;
@@ -71,16 +72,17 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           </p>
         </div>
 
-        {/* Fast Action: Load Official AIROX '26 Sample Dataset */}
+        {/* Import Online Registration Button */}
         <div className="flex items-center gap-2">
           <button
-            id="btn-load-sample-dataset"
+            type="button"
+            id="btn-import-online-registration"
             onClick={onLoadSample}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200 transition shadow-sm active:scale-95 disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-700 text-xs font-semibold border border-indigo-200/90 transition shadow-xs active:scale-95 cursor-pointer"
+            title="Import official online registrations into extractor"
           >
-            <Sparkles className="w-4 h-4 text-indigo-600" />
-            <span>Load AIROX '26 Database (321 Registrations)</span>
+            <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+            <span>Import Online Registration</span>
           </button>
         </div>
       </div>
@@ -146,18 +148,15 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           {sheetNames && sheetNames.length > 1 && onSelectSheet && (
             <div className="flex items-center gap-2">
               <span className="text-slate-600 font-medium">Select Sheet:</span>
-              <select
-                id="select-sheet"
-                value={activeSheet}
-                onChange={e => onSelectSheet(e.target.value)}
-                className="bg-white border border-slate-300 text-slate-800 rounded-lg px-2.5 py-1 text-xs font-medium focus:ring-2 focus:ring-indigo-500 outline-none"
-              >
-                {sheetNames.map(s => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+              <div className="w-44">
+                <CustomSelect
+                  id="select-sheet"
+                  value={activeSheet || ''}
+                  onChange={val => onSelectSheet(val)}
+                  size="sm"
+                  options={sheetNames.map(s => ({ value: s, label: s }))}
+                />
+              </div>
             </div>
           )}
         </div>

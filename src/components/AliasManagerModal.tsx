@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Sliders, Plus, Trash2, Check, X, RotateCcw, Tag } from 'lucide-react';
 import { EventAliasMap } from '../types';
 import { DEFAULT_EVENT_REGISTRY } from '../config/defaultAliases';
+import { CustomSelect } from './ui/CustomSelect';
+import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 
 interface AliasManagerModalProps {
   isOpen: boolean;
@@ -16,6 +18,8 @@ export const AliasManagerModal: React.FC<AliasManagerModalProps> = ({
   registry,
   onSaveRegistry
 }) => {
+  useBodyScrollLock(isOpen);
+
   const [currentMap, setCurrentMap] = useState<EventAliasMap>(registry);
   const [selectedEventKey, setSelectedEventKey] = useState<string>(Object.keys(registry)[0] || '');
   const [newAliasInput, setNewAliasInput] = useState('');
@@ -140,14 +144,16 @@ export const AliasManagerModal: React.FC<AliasManagerModalProps> = ({
                   placeholder="New Event Name..."
                   className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg outline-none focus:ring-1 focus:ring-indigo-500 text-xs"
                 />
-                <select
+                <CustomSelect
+                  id="select-alias-category"
                   value={newEventCategory}
-                  onChange={e => setNewEventCategory(e.target.value as any)}
-                  className="w-full px-2.5 py-1 border border-slate-300 rounded-lg outline-none text-xs"
-                >
-                  <option value="Technical">Technical</option>
-                  <option value="Non-Technical">Non-Technical</option>
-                </select>
+                  onChange={val => setNewEventCategory(val as any)}
+                  size="sm"
+                  options={[
+                    { value: 'Technical', label: 'Technical' },
+                    { value: 'Non-Technical', label: 'Non-Technical' }
+                  ]}
+                />
                 <div className="flex justify-end gap-1 pt-1">
                   <button
                     onClick={() => setIsAddingNewEvent(false)}

@@ -4,6 +4,8 @@ import { OfflineRegistrationFormData, OfflineRegistrationRecord, Participant } f
 import { defaultNormalizer } from '../../utils/normalizer';
 import { checkDuplicateRegistration } from '../../services/googleSheetsService';
 import { DuplicateAlertModal } from './DuplicateAlertModal';
+import { CustomSelect } from '../ui/CustomSelect';
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock';
 
 interface CreateOfflineModalProps {
   isOpen: boolean;
@@ -22,6 +24,7 @@ export const CreateOfflineModal: React.FC<CreateOfflineModalProps> = ({
   onlineParticipants,
   currentCoordinator
 }) => {
+  useBodyScrollLock(isOpen);
   const [formData, setFormData] = useState<OfflineRegistrationFormData>({
     fullName: '',
     email: '',
@@ -370,15 +373,16 @@ export const CreateOfflineModal: React.FC<CreateOfflineModalProps> = ({
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Verification Status
                 </label>
-                <select
+                <CustomSelect
+                  id="select-create-verification-status"
                   value={formData.verificationStatus}
-                  onChange={e => setFormData(p => ({ ...p, verificationStatus: e.target.value as any }))}
-                  className="w-full px-3 py-2 rounded-xl text-xs border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-                >
-                  <option value="Verified">Verified (Paid / Approved)</option>
-                  <option value="Pending">Pending</option>
-                  <option value="Rejected">Rejected</option>
-                </select>
+                  onChange={val => setFormData(p => ({ ...p, verificationStatus: val as any }))}
+                  options={[
+                    { value: 'Verified', label: 'Verified (Paid / Approved)' },
+                    { value: 'Pending', label: 'Pending' },
+                    { value: 'Rejected', label: 'Rejected' }
+                  ]}
+                />
               </div>
 
               <div>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, UserCheck, ShieldAlert, X, ArrowRight, CornerDownRight } from 'lucide-react';
 import { DuplicateCheckResult, OfflineRegistrationFormData } from '../../types';
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock';
 
 interface DuplicateAlertModalProps {
   isOpen: boolean;
@@ -17,6 +18,7 @@ export const DuplicateAlertModal: React.FC<DuplicateAlertModalProps> = ({
   onConfirm,
   onCancel
 }) => {
+  useBodyScrollLock(isOpen && Boolean(duplicateInfo));
   if (!isOpen || !duplicateInfo || !pendingFormData) return null;
 
   const matched = duplicateInfo.matchedRecord;

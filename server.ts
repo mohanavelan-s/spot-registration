@@ -2,30 +2,21 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { serverSheetsService } from './server/sheetsService';
+import { serverSupabaseService } from './server/supabaseService';
 import { serverAuthService, AppUser, UserRole } from './server/authService';
 import { serverCertificateService } from './server/certificateService';
-import { serverCombinedService } from './server/combinedService';
+import { serverEventRegistryService } from './server/eventRegistryService';
 
 // Extend Express Request type to include authenticated user
 interface AuthenticatedRequest extends Request {
   user?: AppUser | null;
 }
 
-export function createApp() {
+async function startServer() {
   const app = express();
+  const PORT = 3000;
 
-  // CORS Middleware
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
-    }
-    next();
-  });
-
-  // JSON Body parsing
+  // JSON Body parsing with error safety
   app.use(express.json());
 
   // Global Auth Context Middleware
@@ -44,7 +35,7 @@ export function createApp() {
     if (!req.user) {
       return res.status(401).json({
         success: false,
-        error: 'Unauthorized: Authentication required. Please sign in with an authorized account.'
+        error: 'Unauthorized: Authentication required. Please sign in.'
       });
     }
     if (req.user.status !== 'ACTIVE') {
@@ -65,17 +56,18 @@ export function createApp() {
           error: 'Unauthorized: Please sign in.'
         });
       }
-      const hasAllowedRole =
-        allowedRoles.includes(req.user.role) ||
-        (req.user.secondaryRoles && req.user.secondaryRoles.some(r => allowedRoles.includes(r)));
 
-      if (!hasAllowedRole) {
+      // Check primary role and additionalRoles
+      const userRoles = [req.user.role, ...(req.user.additionalRoles || [])];
+      const hasPermission = allowedRoles.some(r => userRoles.includes(r));
+
+      if (!hasPermission) {
         serverAuthService.logAudit({
           userEmail: req.user.email,
           userName: req.user.name,
           role: req.user.role,
           action: 'ACCESS_DENIED',
-          details: `Attempted access to role-restricted resource requiring [${allowedRoles.join(', ')}]`,
+          details: `Attempted access to resource requiring [${allowedRoles.join(', ')}]`,
           status: 'DENIED'
         });
 
@@ -93,7 +85,8 @@ export function createApp() {
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
-      sheetConfigured: Boolean(serverSheetsService.getSheetId()),
+      offlineSheetConfigured: Boolean(serverSheetsService.getSheetId()),
+      onlineSheetConfigured: Boolean(serverSheetsService.getOnlineSheetId()),
       googleAuthReady: serverSheetsService.isAuthConfigured(),
       authMethod: serverSheetsService.getAuthMethod(),
       serviceAccountEmail: serverSheetsService.getServiceAccountEmail(),
@@ -129,33 +122,61 @@ export function createApp() {
     });
   });
 
-  // Login handler (Supports Username/Password Credentials and OAuth)
-  app.post('/api/auth/login', (req: AuthenticatedRequest, res: Response) => {
+  // Staff Credentials Login (Username/Email + Password)
+  app.post('/api/auth/staff-login', (req: Request, res: Response) => {
     try {
-      const { username, password, email, name, picture } = req.body;
+      const { username, identifier, password } = req.body;
+      const idToUse = username || identifier;
 
-      // A. Credentials Login (Username/Email + Password)
-      if (password !== undefined) {
-        const identifier = username || email;
-        if (!identifier) {
-          return res.status(400).json({ success: false, error: 'Username or email is required.' });
-        }
-        const authResult = serverAuthService.authenticateWithCredentials(identifier, password);
-        return res.json({
-          success: true,
-          token: authResult.token,
-          user: authResult.user,
-          mustChangePassword: authResult.mustChangePassword
+      if (!idToUse || !password) {
+        return res.status(400).json({
+          success: false,
+          error: 'Username/Email and Password are required.'
         });
       }
 
-      // B. OAuth Login (Google Sign-In)
+      const { user, mustChangePassword } = serverAuthService.authenticateWithCredentials(idToUse, password);
+
+      res.json({
+        success: true,
+        user,
+        mustChangePassword
+      });
+    } catch (err: any) {
+      res.status(401).json({
+        success: false,
+        error: err.message || 'Invalid username or password.'
+      });
+    }
+  });
+
+  // General Login handler (supports both credentials & Google auth)
+  app.post('/api/auth/login', (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { username, identifier, password, email, name, picture } = req.body;
+
+      // If password provided -> use credentials auth
+      if (password && (username || identifier || email)) {
+        const idToUse = username || identifier || email;
+        const { user, mustChangePassword } = serverAuthService.authenticateWithCredentials(idToUse, password);
+        return res.json({
+          success: true,
+          user,
+          mustChangePassword
+        });
+      }
+
+      // Google OAuth fallback
       if (!email) {
-        return res.status(400).json({ success: false, error: 'Email or Username + Password is required for authentication.' });
+        return res.status(400).json({ success: false, error: 'Email or credentials are required for authentication.' });
       }
 
       const normalizedEmail = email.toLowerCase().trim();
-      let user = serverAuthService.getUserByEmail(normalizedEmail) || serverAuthService.getUserByUsername(normalizedEmail);
+      let user = serverAuthService.getUserByEmail(normalizedEmail);
+
+      if (!user && (normalizedEmail === 'mohanavelandev@gmail.com' || normalizedEmail === process.env.ADMIN_EMAIL?.toLowerCase())) {
+        user = serverAuthService.resolveUserFromHeaders({ 'x-user-email': normalizedEmail });
+      }
 
       if (!user) {
         serverAuthService.logAudit({
@@ -169,7 +190,7 @@ export function createApp() {
 
         return res.status(403).json({
           success: false,
-          error: 'Access Denied: Your Google account is not authorized to access this symposium portal. Please contact an Administrator to assign your role.'
+          error: 'Access Denied: Your account is not authorized to access this symposium portal. Please sign in with your staff username and password.'
         });
       }
 
@@ -189,12 +210,8 @@ export function createApp() {
         });
       }
 
-      // Update last login
-      const updated = serverAuthService.updateUser(user.id, {}, user);
-      if (picture) updated.picture = picture;
-
-      // Create session for authenticated OAuth user
-      const session = serverAuthService.createSession(user.id);
+      user.lastLoginAt = new Date().toISOString();
+      if (picture) user.picture = picture;
 
       serverAuthService.logAudit({
         userEmail: user.email,
@@ -207,45 +224,62 @@ export function createApp() {
 
       res.json({
         success: true,
-        token: session.token,
-        user: updated,
-        mustChangePassword: Boolean(updated.mustChangePassword)
+        user,
+        mustChangePassword: Boolean(user.mustChangePassword)
       });
     } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message || 'Authentication failed' });
+      res.status(401).json({
+        success: false,
+        error: err.message || 'Login failed.'
+      });
     }
   });
 
-  // Change Password endpoint (first login or self-service)
+  // Change Password Endpoint (First login or self-service)
   app.post('/api/auth/change-password', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { newPassword, currentPassword, userId } = req.body;
-      const targetId = req.user!.role === 'ADMIN' && userId ? userId : req.user!.id;
-      const updatedUser = serverAuthService.changePassword(
-        targetId,
-        newPassword,
-        currentPassword,
-        req.user!
-      );
+      const { newPassword } = req.body;
+      if (!newPassword || newPassword.length < 4) {
+        return res.status(400).json({
+          success: false,
+          error: 'New password must be at least 4 characters long.'
+        });
+      }
+
+      const updatedUser = serverAuthService.changePassword(req.user!.id, newPassword);
+
       res.json({
         success: true,
         user: updatedUser,
-        message: 'Password successfully updated.'
+        message: 'Password updated successfully.'
       });
     } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message || 'Password update failed' });
+      res.status(400).json({
+        success: false,
+        error: err.message || 'Failed to change password.'
+      });
+    }
+  });
+
+  // Admin: Reset user password to default
+  app.post('/api/auth/users/:id/reset-password', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const result = serverAuthService.resetPasswordToDefault(id, req.user!);
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err: any) {
+      res.status(400).json({
+        success: false,
+        error: err.message || 'Failed to reset password.'
+      });
     }
   });
 
   // Logout handler
   app.post('/api/auth/logout', (req: AuthenticatedRequest, res: Response) => {
-    const authHeader = req.headers['authorization'];
-    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-      serverAuthService.destroySession(authHeader.substring(7).trim());
-    } else if (typeof req.headers['x-session-token'] === 'string') {
-      serverAuthService.destroySession(req.headers['x-session-token'].trim());
-    }
-
     if (req.user) {
       serverAuthService.logAudit({
         userEmail: req.user.email,
@@ -268,13 +302,13 @@ export function createApp() {
   // Admin: Create new authorized user
   app.post('/api/auth/users', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection, password } = req.body;
+      const { name, username, email, role, additionalRoles, status, assignedEvents, initialPassword } = req.body;
       if (!name || !role) {
         return res.status(400).json({ success: false, error: 'Name and role are required.' });
       }
 
       const newUser = serverAuthService.createUser(
-        { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection, password },
+        { name, username, email, role, additionalRoles, status, assignedEvents, initialPassword },
         req.user!
       );
 
@@ -288,32 +322,15 @@ export function createApp() {
   app.put('/api/auth/users/:id', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection } = req.body;
+      const { name, role, additionalRoles, status, assignedEvents } = req.body;
 
       const updatedUser = serverAuthService.updateUser(
         id,
-        { name, username, email, role, secondaryRoles, status, assignedEvents, teamName, yearSection },
+        { name, role, additionalRoles, status, assignedEvents },
         req.user!
       );
 
       res.json({ success: true, user: updatedUser });
-    } catch (err: any) {
-      res.status(400).json({ success: false, error: err.message });
-    }
-  });
-
-  // Admin: Reset password for user
-  app.post('/api/auth/users/:id/reset-password', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const { id } = req.params;
-      const { newPassword } = req.body;
-      const result = serverAuthService.resetPassword(id, newPassword, req.user!);
-      res.json({
-        success: true,
-        user: result.user,
-        temporaryPassword: result.temporaryPassword,
-        message: 'Password reset successfully. The user will be prompted to set a new password on their next login.'
-      });
     } catch (err: any) {
       res.status(400).json({ success: false, error: err.message });
     }
@@ -337,7 +354,7 @@ export function createApp() {
     res.json({ success: true, logs });
   });
 
-  // Post Audit Log Entry (for client actions like Exports or Syncs)
+  // Post Audit Log Entry
   app.post('/api/audit-logs', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     const { action, details, targetId, status } = req.body;
     const entry = serverAuthService.logAudit({
@@ -354,8 +371,8 @@ export function createApp() {
 
   // --- CERTIFICATE DESK & TRACKING APIS ---
 
-  // Get all certificate records
-  app.get('/api/certificates', requireRole('ADMIN', 'CERTIFICATE', 'DATABASE'), (req: AuthenticatedRequest, res: Response) => {
+  // Get all certificate records (Public/Read access for Certificate Desk)
+  app.get('/api/certificates', (req: AuthenticatedRequest, res: Response) => {
     try {
       const records = serverCertificateService.getAllRecords();
       res.json({
@@ -397,7 +414,7 @@ export function createApp() {
     }
   });
 
-  // Bulk update certificate statuses (ADMIN or CERTIFICATE only)
+  // Bulk update certificate statuses
   app.post('/api/certificates/bulk-update', requireRole('ADMIN', 'CERTIFICATE'), (req: AuthenticatedRequest, res: Response) => {
     try {
       const { updates } = req.body;
@@ -440,7 +457,126 @@ export function createApp() {
     }
   });
 
-  // --- EVENT-LEVEL AUTHORIZATION & PARTICIPANTS API ---
+  // --- UNIFIED PARTICIPANTS & ROSTERS APIS ---
+
+  // Online Participants Endpoint
+  app.get('/api/online/participants', async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const participants = await serverSheetsService.fetchOnlineRegistrations();
+      res.json({
+        success: true,
+        total: participants.length,
+        participants
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Unified Combined Participants (Online + Offline) with RBAC Scoping
+  app.get('/api/combined/participants', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      let participants = await serverSheetsService.getCombinedParticipants();
+
+      // If Event Coordinator -> restrict to their assigned events only!
+      if (req.user?.role === 'EVENT_COORDINATOR') {
+        const assigned = req.user.assignedEvents || [];
+        const normAssigned = assigned.map(e => e.toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+        participants = participants.filter(p => {
+          return p.allEvents.some(ev => {
+            const normEv = ev.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return normAssigned.some(a => normEv === a || normEv.includes(a) || a.includes(normEv));
+          });
+        });
+      }
+
+      res.json({
+        success: true,
+        total: participants.length,
+        participants
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- SYMPOSIUM EVENTS & TRACKS REGISTRY APIS ---
+
+  // Get active symposium events registry (Public/Read across all authenticated users)
+  app.get('/api/events/registry', (req: Request, res: Response) => {
+    try {
+      const data = serverEventRegistryService.getRegistry();
+      res.json({
+        success: true,
+        registry: data.registry,
+        totalEvents: data.totalEvents,
+        lastUpdated: data.lastUpdated
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Update symposium events & tracks (ADMIN Only - broadcasts to all users)
+  app.put('/api/events/registry', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { registry } = req.body;
+      if (!registry || typeof registry !== 'object') {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing or invalid "registry" configuration map.'
+        });
+      }
+
+      const updated = serverEventRegistryService.updateRegistry(registry);
+
+      serverAuthService.logAudit({
+        userEmail: req.user?.email || 'admin',
+        userName: req.user?.name || 'Administrator',
+        role: req.user?.role || 'ADMIN',
+        action: 'EVENT_REGISTRY_UPDATED',
+        details: `Updated symposium event tracks: ${updated.totalEvents} total events configured.`,
+        status: 'SUCCESS'
+      });
+
+      res.json({
+        success: true,
+        registry: updated.registry,
+        totalEvents: updated.totalEvents,
+        lastUpdated: updated.lastUpdated,
+        message: 'Symposium events & tracks updated successfully across the entire portal.'
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Reset symposium events to default (ADMIN Only)
+  app.post('/api/events/registry/reset', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const resetData = serverEventRegistryService.resetToDefault();
+
+      serverAuthService.logAudit({
+        userEmail: req.user?.email || 'admin',
+        userName: req.user?.name || 'Administrator',
+        role: req.user?.role || 'ADMIN',
+        action: 'EVENT_REGISTRY_UPDATED',
+        details: `Reset symposium events registry to default configuration (${resetData.totalEvents} events).`,
+        status: 'SUCCESS'
+      });
+
+      res.json({
+        success: true,
+        registry: resetData.registry,
+        totalEvents: resetData.totalEvents,
+        lastUpdated: resetData.lastUpdated,
+        message: 'Symposium events reset to default AIROX configuration.'
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
 
   // Verify access for a specific event
   app.get('/api/events/:eventKey/verify-access', requireAuth, (req: AuthenticatedRequest, res: Response) => {
@@ -474,93 +610,68 @@ export function createApp() {
     });
   });
 
-  // Comprehensive Diagnostics Endpoint (ADMIN only)
-  app.get('/api/offline/diagnostics', requireRole('ADMIN'), async (req: AuthenticatedRequest, res: Response) => {
+  // --- OFFLINE REGISTRATIONS APIS (SUPABASE & PERSISTENT DATABASE) ---
+
+  // Diagnostics Endpoint
+  app.get('/api/offline/diagnostics', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const diag = await serverSheetsService.runDiagnostics();
+      const diag = await serverSupabaseService.runDiagnostics();
       res.json(diag);
     } catch (err: any) {
-      console.error('[API:Diagnostics] Error:', err);
       res.status(500).json({
-        error: err.message || 'Diagnostic execution failed',
+        error: err.message || 'Supabase diagnostic execution failed',
         details: err
       });
     }
   });
 
-  // Diagnostic Test-Write (TEST-AIROX26) (ADMIN only)
-  app.post('/api/offline/test-write', requireRole('ADMIN'), async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const result = await serverSheetsService.executeTestWrite();
-      if (!result.success) {
-        return res.status(500).json(result);
-      }
-      res.json(result);
-    } catch (err: any) {
-      console.error('[API:TestWrite] Error:', err);
-      res.status(500).json({
-        success: false,
-        error: err.message || 'Test write failed',
-        message: 'Unable to write test record.'
-      });
-    }
+  // Get Supabase configuration
+  app.get('/api/offline/config', (req, res) => {
+    res.json(serverSupabaseService.getConfig());
   });
 
-  // Get configuration (Authenticated users only)
-  app.get('/api/offline/config', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-    res.json({
-      sheetId: serverSheetsService.getSheetId(),
-      isGoogleAuthReady: serverSheetsService.isAuthConfigured(),
-      authMethod: serverSheetsService.getAuthMethod(),
-      serviceAccountEmail: serverSheetsService.getServiceAccountEmail()
-    });
-  });
-
-  // Update configuration (ADMIN only)
+  // Update Supabase configuration (Admin only)
   app.post('/api/offline/config', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
-    const { sheetId } = req.body;
-    if (typeof sheetId === 'string') {
-      serverSheetsService.setSheetId(sheetId);
+    const { supabaseUrl, supabaseAnonKey, tableName } = req.body;
+    if (typeof supabaseUrl === 'string' && typeof supabaseAnonKey === 'string') {
+      serverSupabaseService.setConfig(supabaseUrl, supabaseAnonKey, tableName);
     }
     res.json({
       success: true,
-      sheetId: serverSheetsService.getSheetId(),
-      isGoogleAuthReady: serverSheetsService.isAuthConfigured(),
-      authMethod: serverSheetsService.getAuthMethod(),
-      serviceAccountEmail: serverSheetsService.getServiceAccountEmail()
+      config: serverSupabaseService.getConfig()
     });
   });
 
-  // READ: Fetch all offline registrations (Authenticated users)
-  app.get('/api/offline/registrations', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  // Get SQL Migration Schema
+  app.get('/api/offline/sql-schema', (req, res) => {
+    res.json({
+      sql: serverSupabaseService.getSqlMigrationSchema()
+    });
+  });
+
+  // READ: Fetch all offline registrations directly from Supabase / persistent store
+  app.get('/api/offline/registrations', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const result = await serverSheetsService.fetchRegistrations();
+      const result = await serverSupabaseService.fetchRegistrations();
       res.json({
         success: true,
         records: result.records,
-        headers: result.headers,
         source: result.source,
-        sheetId: serverSheetsService.getSheetId(),
-        warning: result.warning
+        message: result.message
       });
     } catch (err: any) {
-      console.warn('[API:Read] Notice fetching offline registrations:', err?.message || err);
-      const cached = serverSheetsService.getCachedRecords();
-      res.json({
-        success: true,
-        records: cached,
-        headers: serverSheetsService.getHeaders(),
-        source: 'LOCAL_BACKUP',
-        sheetId: serverSheetsService.getSheetId(),
-        warning: err.message || 'Serving local cached records due to temporary rate limit.'
+      res.status(500).json({
+        success: false,
+        error: `Unable to fetch registrations: ${err.message}`,
+        details: err.message
       });
     }
   });
 
-  // SYNC: Force fresh sync from Google Sheets (Authenticated users)
-  app.post('/api/offline/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  // SYNC: Force fresh sync from Supabase
+  app.post('/api/offline/sync', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const result = await serverSheetsService.fetchRegistrations(true);
+      const result = await serverSupabaseService.fetchRegistrations();
 
       if (req.user) {
         serverAuthService.logAudit({
@@ -568,7 +679,7 @@ export function createApp() {
           userName: req.user.name,
           role: req.user.role,
           action: 'DATA_SYNCED',
-          details: `Synchronized ${result.records.length} registrations.`,
+          details: `Synchronized ${result.records.length} registrations from Supabase.`,
           status: 'SUCCESS'
         });
       }
@@ -576,58 +687,88 @@ export function createApp() {
       res.json({
         success: true,
         records: result.records,
-        headers: result.headers,
         source: result.source,
-        warning: result.warning,
-        message: result.warning || `Synchronized ${result.records.length} registrations successfully.`
+        message: `Synchronized ${result.records.length} registrations successfully.`
       });
     } catch (err: any) {
-      console.warn('[API:Sync] Notice syncing offline registrations:', err?.message || err);
-      const cached = serverSheetsService.getCachedRecords();
-      res.json({
-        success: true,
-        records: cached,
-        headers: serverSheetsService.getHeaders(),
-        source: 'LOCAL_BACKUP',
-        warning: err.message || 'Serving local cached records due to temporary rate limit.',
-        message: `Served ${cached.length} local records (Google Sheets rate limit reached).`
+      res.status(500).json({
+        success: false,
+        error: `Unable to sync: ${err.message}`
       });
     }
   });
 
-  // CREATE: Append new registration (Requires ADMIN or ON_SPOT)
-  app.post('/api/offline/registrations', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
+  // PUSH SYNC: Write all local database records to Supabase
+  app.post(['/api/offline/sync-to-supabase', '/api/offline/sync-to-sheet'], async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { formData, coordinatorName } = req.body;
+      const result = await serverSupabaseService.syncAllLocalToSupabase();
 
-      if (!formData || !formData.fullName || !formData.mobile) {
+      if (req.user) {
+        serverAuthService.logAudit({
+          userEmail: req.user.email,
+          userName: req.user.name,
+          role: req.user.role,
+          action: 'DATA_SYNCED',
+          details: `Pushed ${result.syncedCount} offline registrations to Supabase.`,
+          status: 'SUCCESS'
+        });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        error: `Failed to push sync to Supabase: ${err.message}`
+      });
+    }
+  });
+
+  // CREATE: Append new offline registration (ADMIN, ON_SPOT, REGISTRATION, DATABASE)
+  app.post('/api/offline/registrations', async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (req.user && !['ADMIN', 'ON_SPOT', 'REGISTRATION', 'DATABASE'].includes(req.user.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Creating offline registrations is restricted to Registration desk and Admin team members.'
+        });
+      }
+
+      const bodyData = req.body.formData || req.body || {};
+      const coordinatorName = req.body.coordinatorName || bodyData.registeredBy;
+
+      const fullName = bodyData.fullName || bodyData.name;
+      const mobile = bodyData.mobile || bodyData.phone;
+
+      if (!fullName || !mobile) {
         return res.status(400).json({
           success: false,
           error: 'Full Name and Mobile Number are required.'
         });
       }
 
-      const eventString = Array.isArray(formData.selectedEvents)
-        ? formData.selectedEvents.join(', ')
-        : String(formData.event || formData.selectedEvents || '');
+      const eventString = Array.isArray(bodyData.selectedEvents)
+        ? bodyData.selectedEvents.join(', ')
+        : String(bodyData.event || bodyData.selectedEvents || '');
 
-      const registeredBy = formData.registeredBy || coordinatorName || req.user?.name || 'Desk Admin';
+      const registeredBy = bodyData.registeredBy || coordinatorName || req.user?.name || 'On Spot Desk';
 
-      const newRecord = await serverSheetsService.createRegistration(
-        {
-          fullName: formData.fullName,
-          email: formData.email,
-          mobile: formData.mobile,
-          college: formData.college,
-          department: formData.department,
-          yearSection: formData.yearSection,
-          event: eventString,
-          teamName: formData.teamName || '',
-          verificationStatus: formData.verificationStatus || 'Verified',
-          registeredBy
-        },
-        registeredBy
-      );
+      const newRecord = await serverSupabaseService.appendRegistration({
+        offlineRegistrationId: bodyData.offlineRegistrationId || '',
+        fullName: String(fullName).trim(),
+        email: bodyData.email || '',
+        mobile: String(mobile).trim(),
+        college: bodyData.college || '',
+        department: bodyData.department || '',
+        yearSection: bodyData.yearSection || '',
+        event: eventString,
+        teamName: bodyData.teamName || '',
+        verificationStatus: bodyData.verificationStatus || 'Verified',
+        registeredAt: bodyData.registeredAt || '',
+        registeredBy,
+        updatedAt: '',
+        updatedBy: registeredBy,
+        status: bodyData.status || 'ACTIVE'
+      });
 
       if (req.user) {
         serverAuthService.logAudit({
@@ -635,7 +776,7 @@ export function createApp() {
           userName: req.user.name,
           role: req.user.role,
           action: 'OFFLINE_REGISTRATION_CREATED',
-          details: `Created registration for ${newRecord.fullName} (${newRecord.college}) in events: [${eventString}]`,
+          details: `Created offline registration for ${newRecord.fullName} (${newRecord.offlineRegistrationId})`,
           targetId: newRecord.offlineRegistrationId,
           status: 'SUCCESS'
         });
@@ -644,34 +785,33 @@ export function createApp() {
       res.status(201).json({
         success: true,
         record: newRecord,
-        message: `Offline Registration ${newRecord.offlineRegistrationId} saved successfully.`
+        message: `Offline registration ${newRecord.offlineRegistrationId} saved successfully!`
       });
     } catch (err: any) {
-      console.error('[API:Create] Error creating offline registration:', err);
       res.status(500).json({
         success: false,
-        error: `Unable to save registration: ${err.message || 'Storage error'}`,
+        error: `Failed to save offline registration: ${err.message}`,
         details: err.message
       });
     }
   });
 
-  // UPDATE: Edit existing registration (ADMIN or ON_SPOT)
-  app.put('/api/offline/registrations/:id', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
+  // UPDATE: Edit offline registration
+  app.put('/api/offline/registrations/:id', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { id } = req.params;
-      const { updates, coordinatorName } = req.body;
-
-      if (!id) {
-        return res.status(400).json({ success: false, error: 'Registration ID is required.' });
+      if (req.user && !['ADMIN', 'ON_SPOT', 'REGISTRATION', 'DATABASE'].includes(req.user.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Updating offline registrations is restricted to Registration desk and Admin team members.'
+        });
       }
 
-      const updater = coordinatorName || req.user?.name || 'Desk Admin';
-      const updatedRecord = await serverSheetsService.updateRegistration(
-        id,
-        updates,
-        updater
-      );
+      const { id } = req.params;
+      const updates = req.body.updates || req.body || {};
+      const { coordinatorName } = req.body;
+      const actorEmail = coordinatorName || req.user?.email || 'Desk Admin';
+
+      const updatedRecord = await serverSupabaseService.updateRegistration(id, updates, actorEmail);
 
       if (req.user) {
         serverAuthService.logAudit({
@@ -679,7 +819,7 @@ export function createApp() {
           userName: req.user.name,
           role: req.user.role,
           action: 'OFFLINE_REGISTRATION_UPDATED',
-          details: `Updated registration ${id}`,
+          details: `Updated offline registration ${id}`,
           targetId: id,
           status: 'SUCCESS'
         });
@@ -688,40 +828,39 @@ export function createApp() {
       res.json({
         success: true,
         record: updatedRecord,
-        message: `Record ${id} updated successfully.`
+        message: `Registration ${id} updated successfully.`
       });
     } catch (err: any) {
-      console.error(`[API:Update] Error updating registration ${req.params.id}:`, err);
       res.status(500).json({
         success: false,
-        error: `Unable to update registration: ${err.message || 'Storage error'}`
+        error: `Failed to update registration: ${err.message}`
       });
     }
   });
 
-  // CANCEL: Soft delete registration (ADMIN or ON_SPOT)
-  app.post('/api/offline/registrations/:id/cancel', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
+  // CANCEL: Soft delete offline registration
+  app.post('/api/offline/registrations/:id/cancel', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { id } = req.params;
-      const { coordinatorName } = req.body;
-
-      if (!id) {
-        return res.status(400).json({ success: false, error: 'Registration ID is required.' });
+      if (req.user && !['ADMIN', 'ON_SPOT', 'REGISTRATION', 'DATABASE'].includes(req.user.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Cancelling registrations is restricted to Registration desk and Admin team members.'
+        });
       }
 
-      const canceller = coordinatorName || req.user?.name || 'Desk Admin';
-      const cancelledRecord = await serverSheetsService.cancelRegistration(
-        id,
-        canceller
-      );
+      const { id } = req.params;
+      const { coordinatorName } = req.body;
+      const actorEmail = coordinatorName || req.user?.email || 'Desk Admin';
+
+      const cancelledRecord = await serverSupabaseService.cancelRegistration(id, actorEmail);
 
       if (req.user) {
         serverAuthService.logAudit({
           userEmail: req.user.email,
           userName: req.user.name,
           role: req.user.role,
-          action: 'OFFLINE_REGISTRATION_CANCELLED',
-          details: `Cancelled registration ${id}`,
+          action: 'OFFLINE_REGISTRATION_UPDATED',
+          details: `Cancelled offline registration ${id}`,
           targetId: id,
           status: 'SUCCESS'
         });
@@ -730,31 +869,34 @@ export function createApp() {
       res.json({
         success: true,
         record: cancelledRecord,
-        message: `Record ${id} status set to CANCELLED.`
+        message: `Registration ${id} marked as CANCELLED.`
       });
     } catch (err: any) {
-      console.error(`[API:Cancel] Error cancelling registration ${req.params.id}:`, err);
       res.status(500).json({
         success: false,
-        error: `Unable to cancel registration: ${err.message || 'Storage error'}`
+        error: `Failed to cancel registration: ${err.message}`
       });
     }
   });
 
-  // RESTORE: Set status back to 'ACTIVE' (ADMIN or ON_SPOT)
-  app.post('/api/offline/registrations/:id/restore', requireRole('ADMIN', 'ON_SPOT'), async (req: AuthenticatedRequest, res: Response) => {
+  // RESTORE: Restore cancelled offline registration
+  app.post('/api/offline/registrations/:id/restore', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { id } = req.params;
-      const { coordinatorName } = req.body;
-
-      if (!id) {
-        return res.status(400).json({ success: false, error: 'Registration ID is required.' });
+      if (req.user && !['ADMIN', 'ON_SPOT', 'REGISTRATION', 'DATABASE'].includes(req.user.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Restoring registrations is restricted to Registration desk and Admin team members.'
+        });
       }
 
-      const restorer = coordinatorName || req.user?.name || 'Desk Admin';
-      const restoredRecord = await serverSheetsService.restoreRegistration(
+      const { id } = req.params;
+      const { coordinatorName } = req.body;
+      const actorEmail = coordinatorName || req.user?.email || 'Desk Admin';
+
+      const restoredRecord = await serverSupabaseService.updateRegistration(
         id,
-        restorer
+        { status: 'ACTIVE', verificationStatus: 'Verified' },
+        actorEmail
       );
 
       if (req.user) {
@@ -762,8 +904,8 @@ export function createApp() {
           userEmail: req.user.email,
           userName: req.user.name,
           role: req.user.role,
-          action: 'OFFLINE_REGISTRATION_RESTORED',
-          details: `Restored registration ${id} to ACTIVE`,
+          action: 'OFFLINE_REGISTRATION_UPDATED',
+          details: `Restored offline registration ${id}`,
           targetId: id,
           status: 'SUCCESS'
         });
@@ -772,203 +914,47 @@ export function createApp() {
       res.json({
         success: true,
         record: restoredRecord,
-        message: `Record ${id} restored to ACTIVE.`
+        message: `Registration ${id} restored to ACTIVE.`
       });
     } catch (err: any) {
-      console.error(`[API:Restore] Error restoring registration ${req.params.id}:`, err);
       res.status(500).json({
         success: false,
-        error: `Unable to restore registration: ${err.message || 'Storage error'}`
+        error: `Failed to restore registration: ${err.message}`
       });
     }
   });
 
-  // --- ONLINE REGISTRATIONS APIS ---
-
-  // Get Online Google Sheet config
-  app.get('/api/online/config', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-    res.json({
-      sheetId: serverSheetsService.getOnlineSheetId(),
-      isGoogleAuthReady: serverSheetsService.isAuthConfigured()
-    });
-  });
-
-  // Update Online Google Sheet config (ADMIN only)
-  app.post('/api/online/config', requireRole('ADMIN'), (req: AuthenticatedRequest, res: Response) => {
-    const { sheetId } = req.body;
-    if (typeof sheetId === 'string') {
-      serverSheetsService.setOnlineSheetId(sheetId);
-    }
-    res.json({
-      success: true,
-      sheetId: serverSheetsService.getOnlineSheetId(),
-      isGoogleAuthReady: serverSheetsService.isAuthConfigured()
-    });
-  });
-
-  // Fetch Online registrations
-  app.get('/api/online/registrations', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  // TEST WRITE: Diagnostic test write
+  app.post('/api/offline/test-write', async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const result = await serverSheetsService.fetchOnlineRegistrations();
-      let rows = result.rows;
-
-      // Filter for EVENT_COORDINATOR role to their assigned events
-      if (req.user && req.user.role === 'EVENT_COORDINATOR' && (!req.user.secondaryRoles || !req.user.secondaryRoles.includes('ADMIN'))) {
-        const assigned = (req.user.assignedEvents || []).map(e => e.toLowerCase().replace(/[^a-z0-9]/g, ''));
-        rows = rows.filter(r => {
-          const rowStr = JSON.stringify(r).toLowerCase().replace(/[^a-z0-9]/g, '');
-          return assigned.some(ak => ak && rowStr.includes(ak));
-        });
-      }
-
-      res.json({
-        success: true,
-        rows,
-        headers: result.headers,
-        source: result.source,
-        count: rows.length,
-        sheetId: result.sheetId,
-        warning: result.warning
-      });
+      const result = await serverSupabaseService.executeTestWrite();
+      res.json(result);
     } catch (err: any) {
-      console.warn('[API:Online] Notice fetching online registrations:', err?.message || err);
-      res.status(200).json({
-        success: true,
-        rows: [],
-        headers: [],
-        source: 'FALLBACK',
-        count: 0,
-        warning: err.message || 'Unable to fetch online registrations'
-      });
-    }
-  });
-
-  // Sync / Refresh Online registrations
-  app.post('/api/online/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const result = await serverSheetsService.fetchOnlineRegistrations();
-      if (req.user) {
-        serverAuthService.logAudit({
-          userEmail: req.user.email,
-          userName: req.user.name,
-          role: req.user.role,
-          action: 'DATA_SYNCED',
-          details: `Synchronized ${result.count || 0} online registrations from Google Sheets.`,
-          status: 'SUCCESS'
-        });
-      }
-      res.json({
-        success: true,
-        ...result
-      });
-    } catch (err: any) {
-      console.warn('[API:OnlineSync] Notice syncing online registrations:', err?.message || err);
-      res.status(200).json({
-        success: true,
-        rows: [],
-        headers: [],
-        source: 'FALLBACK',
-        count: 0,
-        warning: err.message || 'Unable to sync online registrations'
-      });
-    }
-  });
-
-  // --- COMBINED PARTICIPANTS & ROSTER EXPORT APIS ---
-
-  // Get Authoritative Combined Dataset with Role-based filtering
-  app.get('/api/participants/combined', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const data = await serverCombinedService.getAuthorizedParticipants(req.user!);
-      res.json({
-        success: true,
-        ...data
-      });
-    } catch (err: any) {
-      console.error('[API:CombinedParticipants] Error:', err);
       res.status(500).json({
         success: false,
-        error: err.message || 'Failed to fetch combined participants'
+        error: `Test write failed: ${err.message}`
       });
     }
   });
 
-  // Get Event Roster
-  app.get('/api/events/:eventKey/roster', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const eventKey = req.params.eventKey;
-      const participants = await serverCombinedService.getEventRoster(eventKey, req.user!);
-      res.json({
-        success: true,
-        eventKey,
-        participants,
-        count: participants.length
-      });
-    } catch (err: any) {
-      const status = err.message?.includes('Forbidden') ? 403 : 500;
-      res.status(status).json({
-        success: false,
-        error: err.message || 'Failed to fetch event roster'
-      });
-    }
-  });
-
-  // Export Event Roster (Enforces server-side RBAC)
-  app.get('/api/events/:eventKey/export', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const eventKey = req.params.eventKey;
-      const format = (req.query.format === 'csv' ? 'csv' : 'xlsx') as 'xlsx' | 'csv';
-      const { buffer, filename, contentType } = await serverCombinedService.exportEventRoster(eventKey, req.user!, format);
-
-      serverAuthService.logAudit({
-        userEmail: req.user!.email,
-        userName: req.user!.name,
-        role: req.user!.role,
-        action: 'ROSTER_EXPORTED',
-        details: `Exported ${format.toUpperCase()} roster for event '${eventKey}'`,
-        targetId: eventKey,
-        status: 'SUCCESS'
-      });
-
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.send(buffer);
-    } catch (err: any) {
-      const status = err.message?.includes('Forbidden') ? 403 : 500;
-      res.status(status).json({
-        success: false,
-        error: err.message || 'Failed to export event roster'
-      });
-    }
-  });
-
-  // API 404 handler
-  app.use('/api', (req: Request, res: Response) => {
+  // 404 handler for unknown /api/* routes (ALWAYS JSON)
+  app.all('/api/*', (req, res) => {
     res.status(404).json({
       success: false,
-      error: `API route not found: ${req.method} ${req.originalUrl}`
+      error: `API endpoint ${req.method} ${req.path} was not found.`
     });
   });
 
-  // Global API error handler
-  app.use('/api', (err: any, req: Request, res: Response, next: NextFunction) => {
-    console.error('[API Server Error]', err);
+  // Global Error Handler for API (ALWAYS JSON)
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    console.error('[API Server Error]:', err);
     res.status(err.status || 500).json({
       success: false,
       error: err.message || 'Internal Server Error'
     });
   });
 
-  return app;
-}
-
-const app = createApp();
-export default app;
-
-async function startServer() {
-  const PORT = 3000;
-
-  // Vite / Static Middleware
+  // Vite middleware for client frontend
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -984,12 +970,8 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`AIROX'26 Server running on http://0.0.0.0:${PORT}`);
+    console.log(`AIROX'26 Server running on port ${PORT}`);
   });
 }
 
-// Start server if not executed as a serverless function module
-if (process.env.VERCEL !== '1') {
-  startServer();
-}
-
+startServer();

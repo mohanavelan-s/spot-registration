@@ -18,6 +18,7 @@ import {
   GraduationCap
 } from 'lucide-react';
 import { Participant } from '../types';
+import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 
 interface ParticipantModalProps {
   participant: Participant | null;
@@ -30,6 +31,7 @@ export const ParticipantModal: React.FC<ParticipantModalProps> = ({
   onClose,
   onStatusChange
 }) => {
+  useBodyScrollLock(Boolean(participant));
   if (!participant) return null;
 
   const isOnline = participant.source === 'ONLINE';
